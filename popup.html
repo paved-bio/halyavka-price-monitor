@@ -250,16 +250,19 @@
         <li>Только страницы из белого списка магазинов</li>
         <li>Не читает пароли и клавиатуру — нет доступа к файлам</li>
         <li>Активно только при задаче: вкладка с пометкой «Халявка»</li>
-        <li>Биржа — только категории с ваших галочек (<code>category_hosts.js</code>)</li>
-        <li>На сервер: ID товара, цель, результат проверки цены</li>
+        <li id="transparency-earn-li" class="hidden">Биржа (авантюрист) — только категории с ваших галочек (<code>category_hosts.js</code>)</li>
+        <li>Вставьте ссылку — магазин и селекторы уже известны серверу</li>
+        <li>На сервер: ID товара, цель, результат проверки (цена / наличие)</li>
         <li>Воркер — добровольно, только когда вы away &gt; 5 мин</li>
       </ul>
       <button id="transparency-btn" class="btn-secondary" type="button">Подробнее: прозрачность и исходники</button>
     </div>
 
-    <div id="earn-section" class="section hidden">
-      <div class="paywall-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <span>Биржа — ваши настройки</span>
+    <details id="earn-section" class="section hidden">
+      <summary class="paywall-title" style="cursor:pointer;list-style:revert;margin-left:4px">Биржа — авантюрист</summary>
+      <div id="earn-section-body" style="margin-top:10px">
+      <div class="paywall-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:0">
+        <span>Ваши настройки</span>
         <a id="earn-advanced-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener" title="Баланс, имя в рейтинге, согласие" style="font-size:1.1rem;text-decoration:none;line-height:1" aria-label="Расширенные настройки авантюриста">⚙</a>
       </div>
       <p class="paywall-desc" style="margin-bottom:8px">
@@ -312,7 +315,20 @@
         Полный кабинет авантюриста (баланс, история) — только через расширение:
         <a id="earn-cabinet-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener">открыть /earn/</a>
       </p>
-    </div>
+      </div>
+    </details>
+
+    <details id="adventurer-teaser" class="section hidden">
+      <summary class="paywall-title" style="cursor:pointer;list-style:revert;margin-left:4px">Заработок на бирже (необязательно)</summary>
+      <p class="paywall-desc" style="margin-top:10px">
+        Отдельный режим <strong>авантюрист</strong> — платные задачи с ваших аккаунтов (лайки, отзывы и т.д.).
+        Для мониторинга <em>своих</em> покупок не нужен: достаточно триала, подписки или воркера.
+      </p>
+      <a id="adventurer-teaser-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener"
+         class="btn-secondary" style="display:inline-block;margin-top:8px;text-align:center;text-decoration:none;padding:8px 12px">
+        Стать авантюристом на сайте →
+      </a>
+    </details>
 
     <div id="activity-section" class="section hidden">
       <div class="paywall-title">Сейчас</div>
@@ -400,7 +416,16 @@
 
     <div id="monitor-section" class="section hidden">
 
-      <div id="product-info" class="product-info"></div>
+      <div class="status info" style="margin-bottom:10px;font-size:0.82rem;line-height:1.4">
+        Только <a href="transparency.html" target="_blank">12 магазинов whitelist</a>.
+        Другие ссылки сервер не примет. Воркер открывает те же URL — см.
+        <a id="whitelist-link-popup" href="#" target="_blank" rel="noopener">GitHub</a>.
+      </div>
+
+      <label for="product-url">Ссылка на товар</label>
+      <input id="product-url" type="text" placeholder="https://www.ozon.ru/product/…" autocomplete="off" spellcheck="false">
+
+      <div id="product-info" class="product-info hidden"></div>
 
       <div class="paywall-desc" style="margin-bottom:8px">Что отслеживать?</div>
       <div class="toggle-row">
@@ -415,10 +440,10 @@
         <input id="target-price" type="number" min="0" step="0.01" placeholder="1000">
       </div>
 
-      <button id="pick-element-btn" class="btn-secondary" type="button">Выбрать элемент (XPath)</button>
+      <button id="pick-element-btn" class="btn-secondary" type="button">Свой XPath (редко нужен)</button>
       <div id="picked-xpath-info" class="product-info hidden"></div>
 
-      <button id="monitor-btn" class="btn-primary">Мониторить этот товар</button>
+      <button id="monitor-btn" class="btn-primary">Добавить и проверить</button>
 
       <div id="monitor-status" class="status hidden"></div>
 
@@ -426,6 +451,7 @@
 
     <div id="tasks-section" class="section hidden">
       <div class="paywall-title">Мои отслеживания</div>
+      <p id="tasks-limit-line" class="paywall-desc" style="margin-bottom:8px;font-size:0.82rem;color:#6b7280"></p>
       <p class="paywall-desc" style="margin-bottom:8px">Удалите ненужное кнопкой ниже. Старые подписки (~9 мес.) удаляются автоматически.</p>
       <div id="tasks-list" class="product-info"></div>
       <button id="refresh-tasks-btn" class="btn-secondary" type="button">Обновить список</button>

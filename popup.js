@@ -38,8 +38,8 @@ const SHOP_PATTERNS = [
   },
   {
     shop_id: "ozon",
-    regex: /(?:https?:\/\/)?(?:www\.)?ozon\.ru(\/product\/[^/?#]+)/i,
-    product_id: (match) => match[1],
+    regex: /(?:https?:\/\/)?(?:www\.)?ozon\.ru(\/product\/(?:[^/?#]+-)?\d{5,}\/?)/i,
+    product_id: (match) => match[1].replace(/\/$/, ""),
   },
   {
     shop_id: "wb",
@@ -61,13 +61,61 @@ const SHOP_PATTERNS = [
     regex: /(?:https?:\/\/)?(?:www\.)?tutu\.ru(\/poezda\/[^?#]+)/i,
     product_id: (match) => match[1],
   },
+  {
+    shop_id: "yandex_market",
+    regex: /(?:https?:\/\/)?(?:www\.)?market\.yandex\.ru(\/(?:card\/[^?#]+\/\d+|product--[^?#]+\/\d+))/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "dns",
+    regex: /(?:https?:\/\/)?(?:www\.)?dns-shop\.ru(\/product\/[^?#]+)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "goldapple",
+    regex: /(?:https?:\/\/)?(?:www\.)?goldapple\.ru(\/\d{5,}[^?#]*)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "citilink",
+    regex: /(?:https?:\/\/)?(?:www\.)?citilink\.ru(\/product\/[^?#]+)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "mvideo",
+    regex: /(?:https?:\/\/)?(?:www\.)?mvideo\.ru(\/products\/[^?#]+)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "detmir",
+    regex: /(?:https?:\/\/)?(?:www\.)?detmir\.ru(\/product\/index\/id\/\d+)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "leroymerlin",
+    regex: /(?:https?:\/\/)?(?:www\.)?(?:lemanapro|leroymerlin)\.ru(\/product\/[^?#]+)/i,
+    product_id: (match) => match[1],
+  },
 ];
 
+function shopLabel(shopId) {
+  const hit = PM_EXTENSION.supportedShops.find((s) => s.id === shopId);
+  return hit?.label || shopId;
+}
+
 function parseProductFromUrl(url) {
+  const clean = url.split("?")[0].split("#")[0].trim();
+  if (/ozon\.ru\/search(?:\/|\?)/i.test(url)) {
+    return null;
+  }
   for (const shop of SHOP_PATTERNS) {
-    const match = url.match(shop.regex);
+    const match = clean.match(shop.regex);
     if (match) {
-      return { shop_id: shop.shop_id, product_id: shop.product_id(match) };
+      const product_id = shop.product_id(match);
+      if (shop.shop_id === "ozon" && /\/product\/journey-/i.test(product_id)) {
+        return null;
+      }
+      return { shop_id: shop.shop_id, product_id, source_url: clean };
     }
   }
   return null;
@@ -93,6 +141,39 @@ async function getActiveTabUrl() {
   }
 
   return shopUrls[0];
+}
+
+async function triggerWorkerHeartbeat(taskId = null) {
+  const status = await fetchUserStatus();
+  if (!status.is_worker_mode) {
+    await setWorkerMode(true);
+  }
+  const hb = await chrome.runtime.sendMessage({ type: "RUN_HEARTBEAT", force: true });
+  if (!hb || hb.skipped === "worker_off") {
+    throw new Error("Включите режим воркера в настройках расширения");
+  }
+  if (hb.error) {
+    throw new Error(hb.error);
+  }
+  if (taskId && hb.results?.length) {
+    return hb.results.find((r) => r.task_id === taskId) || hb.results[0];
+  }
+  return hb;
+}
+
+function formatHeartbeatResult(hb, taskId) {
+  if (!hb) return null;
+  const hit =
+    (taskId && hb.results?.find((r) => r.task_id === taskId)) ||
+    hb.results?.find((r) => r.ok) ||
+    hb;
+  if (hit?.ok && hit.parsed_price > 0) {
+    return `Проверено: ${formatPrice(hit.parsed_price)}`;
+  }
+  if (hit?.parse_error) return `Ошибка: ${hit.parse_error}`;
+  if (hit?.error) return `Ошибка: ${hit.error}`;
+  if (hb.skipped === "no_jobs") return "В очереди нет задач — повторите через минуту";
+  return null;
 }
 
 async function fetchUserStatus() {
@@ -137,6 +218,35 @@ function formatTelegramId(tgId) {
   if (!tgId) return "—";
   const s = String(tgId);
   return `Telegram ID: ${s}`;
+}
+
+function renderTierPanels(status) {
+  const isAdventurer = Boolean(status?.can_earn);
+  const connected = Boolean(status?.tg_id);
+
+  document.getElementById("earn-section")?.classList.toggle("hidden", !isAdventurer);
+  document.getElementById("adventurer-teaser")?.classList.toggle("hidden", isAdventurer || !connected);
+  document.getElementById("transparency-earn-li")?.classList.toggle("hidden", !isAdventurer);
+  document.getElementById("earn-page-link")?.classList.toggle("hidden", !isAdventurer);
+}
+
+function renderTasksLimit(status, taskCount) {
+  const el = document.getElementById("tasks-limit-line");
+  if (!el || !status?.can_add_tasks) {
+    if (el) el.textContent = "";
+    return;
+  }
+  const max = status.max_tasks_per_user || 100;
+  const n = taskCount ?? status.monitored_tasks_count ?? 0;
+  el.textContent = `Отслеживается: ${n} из ${max}`;
+}
+
+function formatMonitorLimitError(detail) {
+  if (typeof detail !== "string") return `Ошибка: ${detail}`;
+  if (/лимит/i.test(detail) && !/бирж/i.test(detail)) {
+    return `${detail}\n\nДля сотен товаров — заказ на бирже: halyavka.online/cabinet/`;
+  }
+  return detail;
 }
 
 function renderAccountUI(status, elements) {
@@ -196,6 +306,8 @@ function renderAccountUI(status, elements) {
 
   renderReputationUI(status, elements);
   renderActivityStatus(status);
+  renderTierPanels(status);
+  renderTasksLimit(status);
 }
 
 function renderReputationUI(status, elements) {
@@ -206,7 +318,7 @@ function renderReputationUI(status, elements) {
 
   const pts = Number(status.reputation_points || 0);
   const rank = Number(status.reputation_rank || 0);
-  const show = status.is_worker_mode || status.can_earn || pts > 0;
+  const show = status.can_earn && (pts > 0 || rank > 0);
   box.classList.toggle("hidden", !show);
   ptsEl.textContent = String(pts);
   rankEl.textContent = rank > 0 ? ` · место #${rank}` : "";
@@ -230,7 +342,7 @@ async function renderActivityStatus(status) {
   if (stored.current_earn_job?.category) {
     st.textContent = `▶ Задача биржи (${stored.current_earn_job.category}) — вкладка с полосой «Халявка»`;
     sec.classList.remove("hidden");
-  } else if (status?.can_earn || status?.is_worker_mode) {
+  } else if (status?.can_earn) {
     const bal = ((stored.earn_balance_cents ?? status?.earn_balance_cents ?? 0) / 100).toFixed(2);
     const mode = stored.earn_run_mode || status?.earn_run_mode || "idle";
     const modeTxt = mode === "always" ? "режим: сразу" : "режим: в простое";
@@ -279,6 +391,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const workerSection = document.getElementById("worker-section");
   const workerToggleActive = document.getElementById("worker-toggle-active");
   const monitorSection = document.getElementById("monitor-section");
+  const productUrlInput = document.getElementById("product-url");
   const productInfo = document.getElementById("product-info");
   const targetPriceInput = document.getElementById("target-price");
   const monitorBtn = document.getElementById("monitor-btn");
@@ -303,6 +416,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   extVersion.textContent = `v${PM_EXTENSION.version}`;
   repoLink.href = PM_EXTENSION.repoUrl;
   changelogLink.href = `${PM_EXTENSION.repoUrl}/blob/main/CHANGELOG.md`;
+  const whitelistLink = document.getElementById("whitelist-link-popup");
+  if (whitelistLink) whitelistLink.href = `${PM_EXTENSION.repoUrl}/blob/main/WHITELIST.md`;
 
   transparencyBtn.addEventListener("click", () => pmOpenTransparencyPage());
   workerQueueBtn?.addEventListener("click", () => pmOpenWorkerInfoPage());
@@ -399,16 +514,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   async function refreshProductUI() {
-    const url = await getActiveTabUrl();
+    const pasted = productUrlInput?.value?.trim() || "";
+    let url = pasted;
+    if (!url) {
+      url = (await getActiveTabUrl()) || "";
+      if (url) productUrlInput.value = url;
+    }
     currentProduct = url ? parseProductFromUrl(url) : null;
     if (currentProduct) {
       productInfo.textContent =
-        `Магазин: ${currentProduct.shop_id}\nID: ${currentProduct.product_id}`;
+        `${shopLabel(currentProduct.shop_id)} · ${currentProduct.product_id}`;
+      productInfo.classList.remove("hidden");
+    } else if (pasted || url) {
+      productInfo.textContent =
+        "Ссылка не распознана — проверьте, что магазин в белом списке выше.";
       productInfo.classList.remove("hidden");
     } else {
       productInfo.classList.add("hidden");
     }
   }
+
+  productUrlInput?.addEventListener("input", () => refreshProductUI());
+  productUrlInput?.addEventListener("paste", () => {
+    setTimeout(() => refreshProductUI(), 0);
+  });
 
   function selectedMonitorType() {
     return monitorTypeStock.checked ? "in_stock" : "price_drop";
@@ -431,8 +560,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       const data = await res.json();
       if (!data.tasks?.length) {
         tasksList.textContent = "Пока нет отслеживаемых товаров.";
+        const st = (await chrome.storage.local.get(["user_status"])).user_status;
+        renderTasksLimit(st, 0);
         return;
       }
+      const st = (await chrome.storage.local.get(["user_status"])).user_status;
+      renderTasksLimit(st, data.tasks.length);
       tasksList.innerHTML = "";
       for (const task of data.tasks) {
         const item = document.createElement("div");
@@ -453,9 +586,30 @@ document.addEventListener("DOMContentLoaded", async () => {
           ${title}<br>
           ${priceLine}${historyHint}
           <div class="task-meta">${task.last_check ? `Проверка: ${task.last_check.slice(0, 16).replace("T", " ")}` : "Ещё не проверялось"}${task.parse_fail_count ? ` · ошибок: ${task.parse_fail_count}` : ""}</div>
+          <button type="button" class="btn-check-now" data-task-id="${task.id}">Проверить</button>
           <button type="button" data-task-id="${task.id}">Удалить</button>
         `;
-        item.querySelector("button").addEventListener("click", async () => {
+        item.querySelector(".btn-check-now").addEventListener("click", async (ev) => {
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try {
+            const qRes = await apiFetch(`/tasks/${task.id}/check_now`, { method: "POST" });
+            if (!qRes.ok) {
+              const err = await qRes.json().catch(() => ({}));
+              throw new Error(err.detail || `Ошибка ${qRes.status}`);
+            }
+            showStatus(tasksStatus, "Проверяю…", "ok");
+            const hb = await triggerWorkerHeartbeat(task.id);
+            const msg = formatHeartbeatResult(hb, task.id) || "Отчёт отправлен";
+            showStatus(tasksStatus, msg, hb?.ok ? "ok" : "warn");
+            await loadTasks();
+          } catch (e) {
+            showStatus(tasksStatus, e.message, "err");
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        item.querySelector("button:not(.btn-check-now)").addEventListener("click", async () => {
           const delRes = await apiFetch(`/tasks/${task.id}`, { method: "DELETE" });
           if (!delRes.ok) {
             showStatus(tasksStatus, "Не удалось удалить", "err");
@@ -479,10 +633,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (!sec || !box) return;
 
   if (!status?.can_earn) {
-    sec.classList.add("hidden");
+    sec?.classList.add("hidden");
     return;
   }
-  sec.classList.remove("hidden");
+  sec?.classList.remove("hidden");
 
   try {
     const metaRes = await publicFetch("/exchange/meta/public");
@@ -774,7 +928,11 @@ async function saveEarnCategories() {
   monitorBtn.addEventListener("click", async () => {
     await refreshProductUI();
     if (!currentProduct) {
-      showStatus(monitorStatus, "Откройте страницу товара из белого списка", "err");
+      showStatus(
+        monitorStatus,
+        "Вставьте ссылку на товар из поддерживаемого магазина",
+        "err"
+      );
       return;
     }
     const monitorType = selectedMonitorType();
@@ -794,7 +952,9 @@ async function saveEarnCategories() {
         product_id: currentProduct.product_id,
         target_price: targetPrice,
         monitor_type: monitorType,
+        check_now: true,
       };
+      if (currentProduct.source_url) body.source_url = currentProduct.source_url;
       if (pickedXpath) body.custom_xpath = pickedXpath;
 
       const res = await apiFetch("/tasks/add", {
@@ -818,17 +978,20 @@ async function saveEarnCategories() {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         const detail = err.detail;
-        throw new Error(
-          typeof detail === "string" ? detail : `Ошибка ${res.status}`
-        );
+        throw new Error(formatMonitorLimitError(detail) || `Ошибка ${res.status}`);
       }
 
       const data = await res.json();
-      showStatus(
-        monitorStatus,
-        data.message || `Мониторинг #${data.task_id} принят`,
-        "ok"
-      );
+      showStatus(monitorStatus, "Проверяю цену…", "ok");
+      let hbMsg = data.message || `Мониторинг #${data.task_id} принят`;
+      try {
+        const hb = await triggerWorkerHeartbeat(data.task_id);
+        const extra = formatHeartbeatResult(hb, data.task_id);
+        if (extra) hbMsg = `${hbMsg}\n${extra}`;
+      } catch (hbErr) {
+        hbMsg = `${hbMsg}\nВоркер: ${hbErr.message}`;
+      }
+      showStatus(monitorStatus, hbMsg, "ok");
       await loadTasks();
     } catch (e) {
       showStatus(monitorStatus, e.message, "err");

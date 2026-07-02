@@ -10,7 +10,7 @@
   const parsePrice = PMUtils.parsePrice;
 
   const SHOP_DETECT = [
-    { shop_id: "ozon", regex: /(?:https?:\/\/)?(?:www\.)?ozon\.ru(\/product\/[^/?#]+)/i },
+    { shop_id: "ozon", regex: /(?:https?:\/\/)?(?:www\.)?ozon\.ru(\/product\/(?:[^/?#]+-)?\d{5,}\/?)/i },
     {
       shop_id: "wb",
       regex: /(?:https?:\/\/)?(?:www\.)?wildberries\.ru(\/catalog\/\d+\/detail\.aspx)/i,

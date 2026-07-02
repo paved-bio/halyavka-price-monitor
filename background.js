@@ -1,4 +1,4 @@
-importScripts("utils_price.js", "api_config.js", "constants.js", "session_store.js", "canonical_json.js", "integrity.js", "category_hosts.js");
+importScripts("utils_price.js", "api_config.js", "constants.js", "session_store.js", "canonical_json.js", "integrity.js", "category_hosts.js", "shop_url_guard.js");
 
 const ALARM_NAME = "price-monitor-heartbeat";
 const UPDATE_ALARM = "price-monitor-update-check";
@@ -12,7 +12,7 @@ const NATIVE_HOST = "com.halyavka.pricemonitor";
 const VERSION_JSON_URL = "https://halyavka.online/extension/version.json";
 const EXTENSION_INSTALL_URL = "https://halyavka.online/extension/";
 const IDLE_THRESHOLD_SEC = 300;
-const TAB_LOAD_TIMEOUT_MS = 25000;
+const TAB_LOAD_TIMEOUT_MS = 50000;
 const TAB_SETTLE_AFTER_LOAD_MS = 1200;
 
 function sleep(ms) {
@@ -109,141 +109,51 @@ function waitForTabComplete(tabId) {
   });
 }
 
-function injectAndParse(tabId, xpaths) {
+function injectAndParse(tabId, shopId, xpaths) {
   const xpathList = Array.isArray(xpaths) ? xpaths : [xpaths];
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error("Таймаут парсинга"));
-    }, 15000);
+    }, 20000);
 
     chrome.scripting.executeScript(
-      {
-        target: { tabId },
-        func: (xpathArgs) => {
-          function parsePrice(text) {
-            if (text == null || text === "") return null;
-            let s = String(text).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-            s = s.replace(/руб\.?|₽|rub\.?|rur\.?/gi, "");
-            s = s.replace(/[^\d,.\-]/g, "");
-            if (!s) return null;
-            if (s.includes(",") && s.includes(".")) {
-              const lastComma = s.lastIndexOf(",");
-              const lastDot = s.lastIndexOf(".");
-              if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
-              else s = s.replace(/,/g, "");
-            } else {
-              s = s.replace(",", ".");
-            }
-            const num = parseFloat(s);
-            if (isNaN(num) || num <= 0 || num > 1e9) return null;
-            return Math.round(num * 100) / 100;
-          }
-          function extractEAN() {
-            for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
-              try {
-                const data = JSON.parse(script.textContent);
-                const items = Array.isArray(data) ? data : [data];
-                for (const item of items) {
-                  const gtin = item.gtin13 || item.gtin12 || item.gtin;
-                  if (gtin) return String(gtin).replace(/\D/g, "");
-                }
-              } catch (_) {}
-            }
-            return null;
-          }
-          function extractTitle() {
-            const h1 = document.querySelector("h1")?.textContent?.trim();
-            if (h1 && h1.length > 5 && !/^[\d,\.\s]+$/.test(h1)) {
-              return h1.slice(0, 200);
-            }
-            return (
-              document.title.split(" купить")[0]?.trim().slice(0, 200) || null
-            );
-          }
-          function priceFromXPath(xp) {
-            if (xp.includes("@content") && xp.includes("meta")) {
-              const meta = document.querySelector('meta[itemprop="price"]');
-              const raw = meta?.getAttribute("content") || "";
-              return { raw, price: parsePrice(raw) };
-            }
-            const node = document.evaluate(
-              xp,
-              document,
-              null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE,
-              null
-            ).singleNodeValue;
-            const raw = node ? (node.textContent || node.value || "").trim() : "";
-            return { raw, price: parsePrice(raw) };
-          }
-          const cssSelectors = [
-            "[class*='priceBlockFinalPrice']",
-            "[data-widget='webPrice'] span",
-            "[data-widget='webCurrentPrice'] span",
-          ];
-          let best = { raw: "", price: null, xpath: null };
-          for (const xp of xpathArgs) {
-            const hit = priceFromXPath(xp);
-            if (hit.price) {
-              best = { ...hit, xpath: xp };
-              break;
-            }
-            if (!best.raw && hit.raw) best = { ...hit, xpath: xp };
-          }
-          if (!best.price) {
-            for (const sel of cssSelectors) {
-              for (const el of document.querySelectorAll(sel)) {
-                if (el.closest(".product-card, .cards-list, .recommendations")) continue;
-                const p = parsePrice(el.textContent);
-                if (p) {
-                  best = { raw: el.textContent.trim(), price: p, xpath: sel };
-                  break;
-                }
-              }
-              if (best.price) break;
-            }
-          }
-          if (!best.price) {
-            const meta = document.querySelector('meta[itemprop="price"]');
-            if (meta?.content) {
-              best = {
-                raw: meta.content,
-                price: parsePrice(meta.content),
-                xpath: "meta[itemprop=price]",
-              };
-            }
-          }
-          return {
-            raw: best.raw,
-            price: best.price,
-            used_xpath: best.xpath,
-            ean: extractEAN(),
-            title: extractTitle(),
-          };
-        },
-        args: [xpathList],
-      },
-      (results) => {
-        clearTimeout(timeout);
+      { target: { tabId }, files: ["shop_parse_page.js"] },
+      () => {
         if (chrome.runtime.lastError) {
+          clearTimeout(timeout);
           reject(new Error(chrome.runtime.lastError.message));
           return;
         }
-        const r = results?.[0]?.result;
-        if (!r) {
-          reject(new Error("Пустой результат парсинга"));
-          return;
-        }
-        if (r.price === null || r.price === undefined) {
-          reject(new Error(`Не удалось извлечь цену (xpath: "${r.raw}")`));
-          return;
-        }
-        resolve({
-          price: r.price,
-          ean: r.ean || null,
-          title: r.title || null,
-          used_xpath: r.used_xpath || null,
-        });
+        chrome.scripting.executeScript(
+          {
+            target: { tabId },
+            func: (sid, xpathArgs) => window.PM_parseShopPage(sid, xpathArgs),
+            args: [shopId || null, xpathList],
+          },
+          (results) => {
+            clearTimeout(timeout);
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            const r = results?.[0]?.result;
+            if (!r) {
+              reject(new Error("Пустой результат парсинга"));
+              return;
+            }
+            if (!r.parse_ok) {
+              reject(new Error(`Не удалось определить цену/наличие (${r.raw || "пусто"})`));
+              return;
+            }
+            resolve({
+              price: r.price ?? 0,
+              in_stock: r.in_stock,
+              ean: r.ean || null,
+              title: r.title || null,
+              used_xpath: r.used_xpath || null,
+            });
+          }
+        );
       }
     );
   });
@@ -263,13 +173,56 @@ async function injectJobOverlay(tabId, mode) {
   });
 }
 
-async function parseViaBackgroundTab(url, xpaths) {
+async function parseViaBackgroundTab(url, shopId, xpaths) {
+  if (shopId === "ozon" && typeof PMShopUrl !== "undefined") {
+    const preErr = PMShopUrl.ozonUrlError(url);
+    if (preErr) {
+      console.warn("[PriceMonitor] ozon URL rejected before open:", url, preErr);
+      throw new Error(preErr);
+    }
+  }
+
   const tab = await chrome.tabs.create({ url, active: false });
   try {
     await waitForTabComplete(tab.id);
+    const tabInfo = await chrome.tabs.get(tab.id);
+    let pageMeta = {};
+    try {
+      const metaRes = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => ({
+          title: document.title || "",
+          finalUrl: location.href,
+          h1: document.querySelector("h1")?.innerText?.slice(0, 200) || "",
+          bodyLen: document.body?.innerText?.length || 0,
+        }),
+      });
+      pageMeta = metaRes?.[0]?.result || {};
+    } catch (_) {
+      /* page may block script on some origins */
+    }
+    const finalUrl = pageMeta.finalUrl || tabInfo.url || url;
+    console.log("[PriceMonitor] parse tab trace:", {
+      requested_url: url,
+      final_url: finalUrl,
+      title: pageMeta.title || "",
+      h1: pageMeta.h1 || "",
+      body_len: pageMeta.bodyLen || 0,
+      shop_id: shopId,
+    });
+    if (shopId === "ozon" && typeof PMShopUrl !== "undefined") {
+      const redirectErr = PMShopUrl.ozonUrlError(finalUrl);
+      if (redirectErr) {
+        console.warn("[PriceMonitor] ozon redirected to search:", {
+          requested_url: url,
+          final_url: finalUrl,
+        });
+        throw new Error(redirectErr);
+      }
+    }
     await injectJobOverlay(tab.id, "monitor");
-    await new Promise((r) => setTimeout(r, 500));
-    return await injectAndParse(tab.id, xpaths);
+    await new Promise((r) => setTimeout(r, 800));
+    return await injectAndParse(tab.id, shopId, xpaths);
   } finally {
     try {
       await chrome.tabs.remove(tab.id);
@@ -1014,7 +967,7 @@ async function processOneJob(job) {
   let parsed;
   let parseError = null;
   try {
-    parsed = await parseViaBackgroundTab(job.url, xpaths);
+    parsed = await parseViaBackgroundTab(job.url, job.shop_id, xpaths);
   } catch (parseErr) {
     console.error("[PriceMonitor] Ошибка парсинга:", parseErr.message);
     parseError = parseErr.message;
@@ -1037,7 +990,11 @@ async function processOneJob(job) {
     };
   }
 
-  const parsedPrice = parsed.price;
+  const parsedPrice = parsed.price ?? 0;
+
+  if (parsedPrice <= 0 && !parsed.in_stock && parsed.in_stock !== false) {
+    // out_of_stock=false with price 0 — всё равно отчитываемся
+  }
 
   if (!shouldReportPrice(job.task_id, parsedPrice, job.last_price)) {
     console.log(
@@ -1059,7 +1016,7 @@ async function processOneJob(job) {
       parsed_price: parsedPrice,
       ean: parsed.ean || undefined,
       title: parsed.title || undefined,
-      in_stock: parsedPrice > 0,
+      in_stock: parsed.in_stock,
     }),
   });
 

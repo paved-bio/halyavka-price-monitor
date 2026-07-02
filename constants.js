@@ -16,6 +16,13 @@ const PM_EXTENSION = {
     { id: "steam", label: "Steam", domains: ["steampowered.com"] },
     { id: "avito", label: "Avito", domains: ["avito.ru"] },
     { id: "tutu", label: "Tutu.ru", domains: ["tutu.ru"] },
+    { id: "yandex_market", label: "Яндекс Маркет", domains: ["market.yandex.ru"] },
+    { id: "dns", label: "DNS", domains: ["dns-shop.ru"] },
+    { id: "goldapple", label: "Золотое Яблоко", domains: ["goldapple.ru"] },
+    { id: "citilink", label: "Ситилинк", domains: ["citilink.ru"] },
+    { id: "mvideo", label: "М.Видео", domains: ["mvideo.ru"] },
+    { id: "detmir", label: "Детский мир", domains: ["detmir.ru"] },
+    { id: "leroymerlin", label: "Лемана ПРО", domains: ["lemanapro.ru", "leroymerlin.ru"] },
   ],
 };
 
