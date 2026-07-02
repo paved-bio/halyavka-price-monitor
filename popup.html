@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Price Monitor</title>
+
+  <style>
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+
+      width: 340px;
+
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+      font-size: 14px;
+
+      color: #1a1a1a;
+
+      background: #f8f9fa;
+
+    }
+
+    .container { padding: 16px; }
+
+    h1 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: #2563eb; }
+
+    .section {
+
+      background: #fff;
+
+      border-radius: 8px;
+
+      padding: 12px;
+
+      margin-bottom: 12px;
+
+      border: 1px solid #e5e7eb;
+
+    }
+
+    label { display: block; font-size: 12px; color: #6b7280; margin-bottom: 4px; }
+
+    input[type="text"], input[type="number"] {
+
+      width: 100%;
+
+      padding: 8px 10px;
+
+      border: 1px solid #d1d5db;
+
+      border-radius: 6px;
+
+      font-size: 14px;
+
+      margin-bottom: 8px;
+
+    }
+
+    input:focus {
+
+      outline: none;
+
+      border-color: #2563eb;
+
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+
+    }
+
+    button {
+
+      width: 100%;
+
+      padding: 9px 12px;
+
+      border: none;
+
+      border-radius: 6px;
+
+      font-size: 14px;
+
+      font-weight: 500;
+
+      cursor: pointer;
+
+    }
+
+    .btn-primary { background: #2563eb; color: #fff; }
+
+    .btn-primary:hover { background: #1d4ed8; }
+
+    .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    .btn-secondary { background: #e5e7eb; color: #374151; margin-top: 6px; }
+
+    .status { font-size: 12px; padding: 8px; border-radius: 6px; margin-top: 8px; }
+
+    .status.ok { background: #dcfce7; color: #166534; }
+
+    .status.err { background: #fee2e2; color: #991b1b; }
+
+    .status.info { background: #eff6ff; color: #1e40af; }
+
+    .status.warn { background: #fef3c7; color: #92400e; }
+
+    .hidden { display: none; }
+
+    .product-info { font-size: 12px; color: #374151; margin-bottom: 8px; word-break: break-all; }
+
+    .toggle-row {
+
+      display: flex;
+
+      align-items: center;
+
+      justify-content: space-between;
+
+      margin: 8px 0;
+
+      font-size: 13px;
+
+    }
+
+    .toggle-row input { width: auto; margin: 0; }
+
+    .paywall-title { font-weight: 600; margin-bottom: 6px; }
+
+    .paywall-desc { font-size: 12px; color: #6b7280; margin-bottom: 10px; line-height: 1.4; }
+
+    .task-item {
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #fafafa;
+    }
+
+    .task-item button {
+      margin-top: 6px;
+      width: auto;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .task-meta { font-size: 11px; color: #6b7280; margin-top: 4px; }
+
+    .footer-links {
+      font-size: 11px;
+      color: #6b7280;
+      text-align: center;
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+
+    .footer-links a { color: #2563eb; cursor: pointer; text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; }
+
+    .update-banner {
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      color: #92400e;
+      font-size: 12px;
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+
+    .transparency-list { font-size: 12px; color: #374151; margin: 8px 0; padding-left: 16px; }
+    .transparency-list li { margin-bottom: 4px; }
+
+    .shop-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .shop-chip {
+      font-size: 11px;
+      background: #eff6ff;
+      color: #1e40af;
+      padding: 3px 8px;
+      border-radius: 999px;
+    }
+
+    .btn-link {
+      background: none;
+      border: none;
+      color: #2563eb;
+      font-size: 12px;
+      padding: 0;
+      width: auto;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .earn-cat-list { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+    .earn-cat-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 12px;
+    }
+    .earn-cat-item:last-child { border-bottom: none; }
+    .earn-cat-item label { cursor: pointer; flex: 1; }
+    .earn-cat-badge { font-size: 10px; color: #6b7280; }
+
+    .earn-stealth-block {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .earn-stealth-block summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .earn-range-row { margin-bottom: 8px; font-size: 12px; }
+    .earn-range-row input[type="range"] { width: 100%; margin-top: 4px; }
+    .earn-check-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-size: 12px; }
+    .earn-check-row input { width: auto; margin: 0; }
+    .earn-admin-hint { font-size: 11px; color: #92400e; margin-top: 6px; }
+
+  </style>
+
+</head>
+
+<body>
+
+  <div class="container">
+
+    <h1>Price Monitor <span id="ext-version" style="font-size:11px;color:#6b7280;font-weight:400"></span></h1>
+
+    <div id="update-banner" class="update-banner hidden"></div>
+
+    <div id="transparency-section" class="section">
+      <div class="paywall-title">Что делает расширение</div>
+      <p class="paywall-desc">
+        Следит за ценой товаров из <strong>белого списка</strong> магазинов и шлёт уведомление в Telegram.
+        Код открыт (MIT) — можно проверить, что именно отслеживается.
+      </p>
+      <div class="shop-chips" id="shop-chips"></div>
+      <ul class="transparency-list">
+        <li>Только страницы из белого списка магазинов</li>
+        <li>Не читает пароли и клавиатуру — нет доступа к файлам</li>
+        <li>Активно только при задаче: вкладка с пометкой «Халявка»</li>
+        <li>Биржа — только категории с ваших галочек (<code>category_hosts.js</code>)</li>
+        <li>На сервер: ID товара, цель, результат проверки цены</li>
+        <li>Воркер — добровольно, только когда вы away &gt; 5 мин</li>
+      </ul>
+      <button id="transparency-btn" class="btn-secondary" type="button">Подробнее: прозрачность и исходники</button>
+    </div>
+
+    <div id="earn-section" class="section hidden">
+      <div class="paywall-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span>Биржа — ваши настройки</span>
+        <a id="earn-advanced-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener" title="Баланс, имя в рейтинге, согласие" style="font-size:1.1rem;text-decoration:none;line-height:1" aria-label="Расширенные настройки авантюриста">⚙</a>
+      </div>
+      <p class="paywall-desc" style="margin-bottom:8px">
+        Категории и лимиты сохраняются в расширении и <strong>синхронизируются с сервером</strong>.
+        Сервер выдаёт только то, что вы отметили.
+      </p>
+      <label for="earn-display-name" class="paywall-desc" style="display:block;margin-bottom:4px"><strong>Имя в рейтинге</strong> (видно заказчикам)</label>
+      <input id="earn-display-name" type="text" maxlength="32" placeholder="например, Алекс" style="width:100%;margin-bottom:10px;padding:6px 8px;border-radius:6px;border:1px solid #d1d5db;box-sizing:border-box">
+      <div id="earn-consent-hint" class="paywall-desc hidden" style="color:#92400e;margin-bottom:8px">
+        Нажмите «Сохранить» — условия биржи будут приняты автоматически.
+      </div>
+      <div id="earn-admin-hint" class="earn-admin-hint hidden"></div>
+      <p class="paywall-desc" style="margin-bottom:6px"><strong>Когда брать задачи</strong></p>
+      <div class="earn-check-row" style="margin-bottom:4px">
+        <label><input type="radio" name="earn-run-mode" value="idle" checked> Только в простое (5+ мин без мыши)</label>
+      </div>
+      <div class="earn-check-row" style="margin-bottom:10px">
+        <label><input type="radio" name="earn-run-mode" value="always"> Сразу, пока Chrome открыт (вкладки в фоне)</label>
+      </div>
+      <div id="earn-categories" class="earn-cat-list"></div>
+      <details class="earn-stealth-block" open>
+        <summary>Защита и лимиты (риск на вас)</summary>
+        <label for="earn-stealth-preset">Режим</label>
+        <select id="earn-stealth-preset" style="width:100%;margin-bottom:8px;padding:6px;border-radius:6px;border:1px solid #d1d5db">
+          <option value="paranoid">Параноик — медленно, безопаснее</option>
+          <option value="balanced" selected>Сбалансированный</option>
+          <option value="fast">Быстрый — для тестов / mock</option>
+        </select>
+        <div class="earn-range-row">Паузы × <span id="earn-stealth-dwell-val">1.0</span>
+          <input id="earn-stealth-dwell" type="range" min="0.5" max="2.5" step="0.1" value="1">
+        </div>
+        <div class="earn-range-row">Задач в день: <span id="earn-stealth-daily-val">30</span>
+          <input id="earn-stealth-daily" type="range" min="5" max="300" step="1" value="30">
+        </div>
+        <div class="earn-range-row">Задач в час: <span id="earn-stealth-hourly-val">8</span>
+          <input id="earn-stealth-hourly" type="range" min="2" max="80" step="1" value="8">
+        </div>
+        <div class="earn-range-row">Пауза та же категория (мин): <span id="earn-stealth-cat-cd-val">20</span>
+          <input id="earn-stealth-cat-cd" type="range" min="0" max="120" step="5" value="20">
+        </div>
+        <div class="earn-check-row"><input id="earn-stealth-humanize-clicks" type="checkbox" checked> Плавные клики</div>
+        <div class="earn-check-row"><input id="earn-stealth-humanize-type" type="checkbox" checked> Плавный набор текста</div>
+        <div class="earn-check-row"><input id="earn-stealth-humanize-scroll" type="checkbox" checked> Плавный скролл</div>
+        <div class="earn-check-row"><input id="earn-stealth-mouse-wiggle" type="checkbox" checked> Движение мыши</div>
+        <div class="earn-check-row"><input id="earn-stealth-active-hours" type="checkbox"> Только днём (9–23 МСК)</div>
+      </details>
+      <button id="earn-save-btn" class="btn-primary" type="button" style="margin-top:10px">Сохранить настройки биржи</button>
+      <div id="earn-save-status" class="status hidden"></div>
+      <p class="paywall-desc" style="margin-top:10px;font-size:0.82rem;color:#6b7280">
+        Полный кабинет авантюриста (баланс, история) — только через расширение:
+        <a id="earn-cabinet-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener">открыть /earn/</a>
+      </p>
+    </div>
+
+    <div id="activity-section" class="section hidden">
+      <div class="paywall-title">Сейчас</div>
+      <p id="activity-status" class="paywall-desc">Ничего не выполняется.</p>
+      <p id="earn-limits-line" class="paywall-desc hidden" style="margin-top:6px"></p>
+      <p id="earn-throttle-line" class="paywall-desc hidden" style="margin-top:4px;color:#92400e"></p>
+      <a id="earn-page-link" href="https://halyavka.online/earn/" target="_blank" rel="noopener" class="btn-secondary" style="display:inline-block;margin-top:8px;text-align:center;text-decoration:none;padding:8px 12px">Баланс и статистика →</a>
+    </div>
+
+
+
+    <div id="auth-section" class="section">
+
+      <label for="connect-code">Код связки из Telegram</label>
+
+      <input id="connect-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="1234" autocomplete="one-time-code">
+
+      <button id="connect-btn" class="btn-primary">Подключить</button>
+
+      <div id="auth-status" class="status hidden"></div>
+
+    </div>
+
+
+
+    <div id="account-section" class="section hidden">
+
+      <div id="account-status" class="status info"></div>
+
+      <div id="reputation-box" class="product-info hidden" style="margin-top:10px">
+        <strong>⭐ Рейтинг:</strong> <span id="reputation-points">0</span> баллов
+        <span id="reputation-rank" class="muted"></span>
+        <div class="muted" style="margin-top:4px;font-size:0.85rem">Баллы за работу — розыгрыши и бонусы (не деньги)</div>
+        <a id="leaderboard-link" href="https://halyavka.online/leaderboard/" target="_blank" rel="noopener" style="font-size:0.85rem">Таблица лидеров →</a>
+      </div>
+
+    </div>
+
+
+
+    <div id="paywall-section" class="section hidden">
+
+      <div class="paywall-title">Триал закончился</div>
+
+      <div class="paywall-desc">
+
+        Выберите способ продолжить мониторинг цен:
+
+      </div>
+
+      <button id="premium-btn" class="btn-primary">100 ₽/мес — без нагрузки на ПК</button>
+
+      <div class="toggle-row">
+
+        <label for="worker-toggle">Стать воркером (бесплатно)</label>
+
+        <input id="worker-toggle" type="checkbox">
+
+      </div>
+
+      <div class="paywall-desc">Воркер парсит задачи в фоне, когда вы away (&gt;5 мин)</div>
+
+      <div id="paywall-status" class="status hidden"></div>
+
+    </div>
+
+
+
+    <div id="worker-section" class="section hidden">
+
+      <div class="toggle-row">
+
+        <label for="worker-toggle-active">Режим воркера</label>
+
+        <input id="worker-toggle-active" type="checkbox">
+
+      </div>
+
+      <div class="status info">P2P-парсинг только когда вы away (&gt;5 мин)</div>
+      <button type="button" id="worker-queue-btn" class="btn-secondary" style="margin-top:8px">Что мониторит сеть →</button>
+
+    </div>
+
+
+
+    <div id="monitor-section" class="section hidden">
+
+      <div id="product-info" class="product-info"></div>
+
+      <div class="paywall-desc" style="margin-bottom:8px">Что отслеживать?</div>
+      <div class="toggle-row">
+        <label><input type="radio" name="monitor-type" id="monitor-type-price" value="price_drop" checked> Скидка / цена</label>
+      </div>
+      <div class="toggle-row">
+        <label><input type="radio" name="monitor-type" id="monitor-type-stock" value="in_stock"> Появится в наличии</label>
+      </div>
+
+      <div id="target-price-block">
+        <label for="target-price">Желаемая цена (₽)</label>
+        <input id="target-price" type="number" min="0" step="0.01" placeholder="1000">
+      </div>
+
+      <button id="pick-element-btn" class="btn-secondary" type="button">Выбрать элемент (XPath)</button>
+      <div id="picked-xpath-info" class="product-info hidden"></div>
+
+      <button id="monitor-btn" class="btn-primary">Мониторить этот товар</button>
+
+      <div id="monitor-status" class="status hidden"></div>
+
+    </div>
+
+    <div id="tasks-section" class="section hidden">
+      <div class="paywall-title">Мои отслеживания</div>
+      <p class="paywall-desc" style="margin-bottom:8px">Удалите ненужное кнопкой ниже. Старые подписки (~9 мес.) удаляются автоматически.</p>
+      <div id="tasks-list" class="product-info"></div>
+      <button id="refresh-tasks-btn" class="btn-secondary" type="button">Обновить список</button>
+      <div id="tasks-status" class="status hidden"></div>
+    </div>
+
+    <div class="footer-links">
+      <a id="repo-link" href="#" target="_blank" rel="noopener">GitHub</a>
+      ·
+      <a id="changelog-link" href="#" target="_blank" rel="noopener">Обновления</a>
+      ·
+      <span>MIT</span>
+    </div>
+
+  </div>
+
+  <script src="constants.js"></script>
+  <script src="api_config.js"></script>
+  <script src="earn_prefs.js"></script>
+  <script src="session_store.js"></script>
+  <script src="popup.js"></script>
+
+</body>
+
+</html>
+
+

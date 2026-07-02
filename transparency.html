@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Price Monitor — прозрачность</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      color: #1a1a1a;
+      background: #f8f9fa;
+      padding: 24px 16px 48px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 22px; color: #2563eb; margin-bottom: 8px; }
+    h2 { font-size: 16px; margin: 24px 0 8px; }
+    p, li { font-size: 14px; margin-bottom: 8px; }
+    ul { padding-left: 20px; margin-bottom: 12px; }
+    .badge {
+      display: inline-block;
+      background: #dcfce7;
+      color: #166534;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .warn { background: #fef3c7; border-color: #fcd34d; }
+    code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
+    a { color: #2563eb; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; }
+  </style>
+</head>
+<body>
+  <h1>Price Monitor</h1>
+  <span class="badge">Открытый исходный код · MIT</span>
+  <p id="version-line">Версия расширения: …</p>
+  <p>
+    Это расширение помогает следить за ценой товаров на маркетплейсах и присылать
+    уведомления в Telegram, когда цена падает ниже вашей цели.
+  </p>
+
+  <div class="card">
+    <h2>Какие магазины поддерживаются</h2>
+    <p>Расширение работает <strong>только</strong> с белым списком площадок — никаких скрытых сайтов:</p>
+    <table>
+      <thead>
+        <tr><th>Магазин</th><th>Что отслеживается</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Ozon</td><td>Страницы товаров <code>ozon.ru/product/…</code></td></tr>
+        <tr><td>Wildberries</td><td>Карточки <code>wildberries.ru/catalog/…/detail.aspx</code></td></tr>
+        <tr><td>Steam</td><td>Страницы игр <code>steampowered.com/app/…</code></td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:10px">Список обновляется на сервере и в репозитории. Новые магазины добавляются только через открытые изменения в коде.</p>
+  </div>
+
+  <div class="card">
+    <h2>Какие данные отправляются на сервер</h2>
+    <ul>
+      <li><strong>Telegram ID</strong> — для привязки аккаунта и уведомлений</li>
+      <li><strong>Ссылка / ID товара</strong> — только из белого списка магазинов</li>
+      <li><strong>Целевая цена</strong> — порог для уведомления</li>
+      <li><strong>Результат проверки</strong> — цена, название, EAN (если найден на странице)</li>
+    </ul>
+    <p><strong>Не собираем:</strong> пароли, cookies магазинов, историю браузера, содержимое других вкладок, данные банковских карт.</p>
+  </div>
+
+  <div class="card warn">
+    <h2>Режим воркера (P2P) — добровольно</h2>
+    <p>Если вы включите «Режим воркера», расширение <strong>только когда вы не за компьютером</strong> (idle &gt; 5 мин):</p>
+    <ul>
+      <li>Открывает фоновую вкладку с <strong>чужим</strong> товаром из очереди</li>
+      <li>Читает публичную цену со страницы (как обычный посетитель)</li>
+      <li>Отправляет только цену на наш сервер</li>
+    </ul>
+    <p>Воркер можно выключить в любой момент. Без воркера (или с платной подпиской) ваши товары проверяют другие воркеры.</p>
+    <p><a href="worker_info.html">Открыть очередь воркера</a> — что сейчас мониторит сеть (без имён и скрытых сайтов).</p>
+  </div>
+
+  <div class="card">
+    <h2>Разрешения Chrome — зачем они нужны</h2>
+    <table>
+      <thead><tr><th>Разрешение</th><th>Зачем</th></tr></thead>
+      <tbody>
+        <tr><td><code>storage</code></td><td>Токен сессии и настройки</td></tr>
+        <tr><td><code>alarms</code></td><td>Периодическая проверка очереди (раз в 2 мин)</td></tr>
+        <tr><td><code>tabs</code></td><td>Фоновая вкладка для парсинга (только воркер)</td></tr>
+        <tr><td><code>idle</code></td><td>Не парсить, пока вы активны за ПК</td></tr>
+        <tr><td><code>scripting</code></td><td>Чтение цены с открытой страницы товара</td></tr>
+        <tr><td>Доступ к ozon.ru / wildberries.ru / steampowered.com</td><td>Только карточки товаров из белого списка</td></tr>
+        <tr><td>Доступ к API-серверу</td><td>Отправка задач и получение уведомлений</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Открытый исходный код</h2>
+    <p>Исходный код <strong>расширения</strong> открыт для проверки (сервер и бот — у оператора, без секретов в коде расширения):</p>
+    <ul>
+      <li><a id="repo-link" href="#" target="_blank" rel="noopener">Репозиторий на GitHub</a></li>
+      <li><a id="changelog-link" href="#" target="_blank" rel="noopener">История изменений (CHANGELOG)</a></li>
+      <li>Лицензия: MIT — можно смотреть, форкать и предлагать правки</li>
+    </ul>
+    <p>Обновления публикуются в CHANGELOG и через Telegram-бот. Версия расширения отображается в popup.</p>
+  </div>
+
+  <p style="font-size:12px;color:#6b7280">Если что-то непонятно — напишите в Telegram-бот поддержки или откройте issue в репозитории.</p>
+
+  <script src="constants.js"></script>
+  <script>
+    document.getElementById("version-line").textContent =
+      "Версия расширения: " + PM_EXTENSION.version;
+    document.getElementById("repo-link").href = PM_EXTENSION.repoUrl;
+    document.getElementById("changelog-link").href =
+      PM_EXTENSION.repoUrl + "/blob/main/CHANGELOG.md";
+  </script>
+</body>
+</html>

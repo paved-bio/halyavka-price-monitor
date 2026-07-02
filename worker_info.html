@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Price Monitor — очередь воркера</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      line-height: 1.55;
+      color: #1a1a1a;
+      background: #f8f9fa;
+      padding: 24px 16px 48px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 22px; color: #2563eb; margin-bottom: 8px; }
+    h2 { font-size: 16px; margin: 20px 0 8px; }
+    p, li { font-size: 14px; margin-bottom: 8px; }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .badge-b2b {
+      display: inline-block;
+      background: #fef3c7;
+      color: #92400e;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Очередь воркера</h1>
+  <p class="muted">Открытая сводка: что сейчас мониторит сеть (без имён людей и без скрытых сайтов).</p>
+
+  <div class="card">
+    <h2>Условия</h2>
+    <p id="terms">Загрузка…</p>
+  </div>
+
+  <div class="card">
+    <h2>Сейчас в очереди</h2>
+    <p id="total-line" class="muted">…</p>
+    <table>
+      <thead>
+        <tr><th>Магазин</th><th>Тип</th><th>Задач</th></tr>
+      </thead>
+      <tbody id="queue-body">
+        <tr><td colspan="3">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="muted">
+    <a href="transparency.html">Полная прозрачность</a> ·
+    <a id="site-link" href="https://halyavka.online/extension/" target="_blank" rel="noopener">halyavka.online</a>
+  </p>
+
+  <script src="api_config.js"></script>
+  <script>
+    const typeLabel = {
+      price_drop: "Снижение цены",
+      in_stock: "Появится в наличии",
+    };
+
+    async function loadQueue() {
+      const base = typeof PM_API_BASE !== "undefined" ? PM_API_BASE : "https://halyavka.online/api/v1";
+      const res = await fetch(base + "/meta/worker_queue");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }
+
+    loadQueue().then((data) => {
+      document.getElementById("terms").textContent = data.worker_terms || "—";
+      document.getElementById("total-line").textContent =
+        "Всего активных отслеживаний: " + (data.total_tasks || 0);
+      const tbody = document.getElementById("queue-body");
+      if (!data.shops?.length) {
+        tbody.innerHTML = "<tr><td colspan=\"3\">Пока пусто — добавьте товары или подождите.</td></tr>";
+        return;
+      }
+      tbody.innerHTML = data.shops.map((row) => {
+        const b2b = row.is_b2b ? ' <span class="badge-b2b">B2B</span>' : "";
+        return (
+          "<tr><td>" + row.shop_label + b2b + "</td><td>" +
+          (typeLabel[row.monitor_type] || row.monitor_type) + "</td><td>" +
+          row.count + "</td></tr>"
+        );
+      }).join("");
+    }).catch((err) => {
+      document.getElementById("queue-body").innerHTML =
+        "<tr><td colspan=\"3\">Не удалось загрузить: " + err.message + "</td></tr>";
+    });
+  </script>
+</body>
+</html>
