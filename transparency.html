@@ -36,6 +36,7 @@
       margin-bottom: 16px;
     }
     .warn { background: #fef3c7; border-color: #fcd34d; }
+    .danger { background: #fef2f2; border-color: #fecaca; }
     code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 13px; }
     a { color: #2563eb; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -48,12 +49,22 @@
   <span class="badge">Открытый исходный код · MIT</span>
   <p id="version-line">Версия расширения: …</p>
   <p>
-    Вставьте ссылку на товар из <strong>белого списка</strong> (12 магазинов) — сервер примет задачу.
-    Ссылка на другой сайт <strong>не добавится</strong>. Воркеры открывают только те же whitelist-URL.
+    Вставьте ссылку на товар из <strong>белого списка</strong> — сервер примет задачу.
+    В режиме <strong>Соло</strong> задачи хранятся только на этом ПК.
+    Мониторинг ≠ биржа (авантюрист): это разные уровни риска.
   </p>
 
   <div class="card">
-    <h2>Белый список магазинов (12)</h2>
+    <h2>Режимы: Соло · Воркер · Premium</h2>
+    <ul>
+      <li><strong>Соло</strong> — локальные задачи в браузере, без облака; виджет сравнения недоступен</li>
+      <li><strong>Воркер</strong> — облачные задачи + P2P-проверки цен по whitelist; виджет сравнения</li>
+      <li><strong>Premium</strong> — облако без P2P; не продаётся, выдаётся за достижения (рефералы / топ / донат)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>Белый список магазинов</h2>
     <p>Только эти площадки. Селекторы цены зашиты заранее — воркер не «гуляет» по интернету.</p>
     <table>
       <thead>
@@ -62,7 +73,7 @@
       <tbody id="shops-table"></tbody>
     </table>
     <p style="margin-top:10px">
-      <a href="WHITELIST.md" id="whitelist-doc">Подробнее: WHITELIST.md</a> в репозитории ·
+      <a href="WHITELIST.md" id="whitelist-doc">Подробнее: WHITELIST.md</a> ·
       <a href="worker_info.html">Очередь воркера</a>
     </p>
   </div>
@@ -70,64 +81,83 @@
   <div class="card">
     <h2>Какие данные отправляются на сервер</h2>
     <ul>
-      <li><strong>Telegram ID</strong> — для привязки аккаунта и уведомлений</li>
-      <li><strong>Ссылка / ID товара</strong> — только из белого списка магазинов</li>
-      <li><strong>Целевая цена</strong> — порог для уведомления</li>
-      <li><strong>Результат проверки</strong> — цена, название, EAN (если найден на странице)</li>
+      <li><strong>Telegram ID</strong> — привязка и уведомления</li>
+      <li><strong>Ссылка / ID товара</strong> — только whitelist</li>
+      <li><strong>Целевая цена</strong> и <strong>результат проверки</strong> (цена, title, EAN если есть)</li>
     </ul>
-    <p><strong>Не собираем:</strong> пароли, cookies магазинов, историю браузера, содержимое других вкладок, данные банковских карт.</p>
-  </div>
-
-  <div class="card">
-    <h2>Подписка или воркер</h2>
-    <ul>
-      <li><strong>До 100 товаров</strong> из разных магазинов whitelist одновременно</li>
-      <li><strong>Триал ~30 дней</strong> — бесплатно с режимом воркера</li>
-      <li><strong>Воркер (бесплатно)</strong> — ваш ПК помогает сети читать цены с whitelist-страниц в idle (&gt;5 мин)</li>
-      <li><strong>Подписка ~100 ₽/мес</strong> — мониторинг без нагрузки на ПК; проверяют другие воркеры</li>
-    </ul>
-    <p>Режимы «цена ниже X» и «появится в наличии» (в т.ч. билеты Tutu на маршрут).</p>
+    <p><strong>Не собираем:</strong> пароли, cookies магазинов, историю браузера, содержимое других вкладок, карты.</p>
+    <p>Токен сессии хранится <strong>только на этом ПК</strong> (<code>chrome.storage.local</code>), не в Chrome Sync.</p>
   </div>
 
   <div class="card warn">
     <h2>Режим воркера (P2P) — добровольно</h2>
-    <p>Если включите воркер, расширение <strong>только когда вы не за компьютером</strong> (idle &gt; 5 мин):</p>
+    <p>В idle расширение открывает фоновую вкладку с товаром из очереди <strong>в вашей сессии браузера</strong>
+      (если вы залогинены в Ozon/WB — вкладка идёт как обычный визит с вашими cookies браузера;
+      само расширение cookies не читает и не выгружает).</p>
     <ul>
-      <li>Открывает фоновую вкладку с <strong>чужим</strong> товаром из очереди</li>
-      <li>Читает публичную цену со страницы (как обычный посетитель)</li>
-      <li>Отправляет только цену на наш сервер</li>
+      <li>Читает публичную цену со страницы</li>
+      <li>На сервер уходит только результат проверки (цена / ошибка)</li>
     </ul>
-    <p>Воркер можно выключить в любой момент. Без воркера (или с платной подпиской) ваши товары проверяют другие воркеры.</p>
-    <p><a href="worker_info.html">Открыть очередь воркера</a> — что сейчас мониторит сеть (без имён и скрытых сайтов).</p>
+    <p>Выключить воркер можно в любой момент. Свободный серфинг не журналируется.</p>
   </div>
 
   <div class="card">
-    <h2>Разрешения Chrome — зачем они нужны</h2>
+    <h2>Ссылки и CPA</h2>
+    <p>
+      <strong>Сейчас тихая подмена ссылок на страницах магазинов выключена</strong>
+      (пока нет партнёрских шаблонов на сервере).
+      Виджет «дешевле» может показать кнопку с другой ссылкой — это явный клик, не скрытая подмена всех ссылок.
+    </p>
+  </div>
+
+  <div class="card danger">
+    <h2>Авантюрист (биржа) — отдельный уровень риска</h2>
+    <p>По умолчанию биржа выключена на сервере. Если когда-то включите сами:</p>
+    <ul>
+      <li>Нужно явное согласие в popup</li>
+      <li>Скрипт по заданию сервера может <strong>кликать и печатать</strong> на выбранных сайтах</li>
+      <li>Это не мониторинг цен — выше риск для аккаунтов на сайтах</li>
+    </ul>
+    <p>Без согласия авантюриста расширение этого не делает.</p>
+  </div>
+
+  <div class="card">
+    <h2>Разрешения Chrome</h2>
     <table>
       <thead><tr><th>Разрешение</th><th>Зачем</th></tr></thead>
       <tbody>
-        <tr><td><code>storage</code></td><td>Токен сессии и настройки</td></tr>
-        <tr><td><code>alarms</code></td><td>Периодическая проверка очереди (раз в 2 мин)</td></tr>
-        <tr><td><code>tabs</code></td><td>Фоновая вкладка для парсинга (только воркер)</td></tr>
-        <tr><td><code>idle</code></td><td>Не парсить, пока вы активны за ПК</td></tr>
-        <tr><td><code>scripting</code></td><td>Чтение цены с открытой страницы товара (whitelist)</td></tr>
-        <tr><td>Доступ к доменам из <code>manifest.json</code></td><td>Только 12 магазинов whitelist + API сервера</td></tr>
+        <tr><td><code>storage</code></td><td>Токен сессии и настройки (только local)</td></tr>
+        <tr><td><code>alarms</code></td><td>Очередь и проверка обновлений</td></tr>
+        <tr><td><code>tabs</code> / <code>idle</code></td><td>Фоновые вкладки воркера только в простое</td></tr>
+        <tr><td><code>scripting</code></td><td>Чтение цены на whitelist-странице</td></tr>
+        <tr><td><code>notifications</code></td><td>Уведомления (соло)</td></tr>
+        <tr><td><code>nativeMessaging</code></td><td>Только автообновление файлов расширения с
+          <code>halyavka.online</code> через локальный host (не читает пароли и файлы ПК)</td></tr>
+        <tr><td>Домены в <code>manifest.json</code></td><td>Whitelist магазинов + API</td></tr>
       </tbody>
     </table>
   </div>
 
   <div class="card">
-    <h2>Открытый исходный код</h2>
-    <p>Исходный код <strong>расширения</strong> открыт для проверки (сервер и бот — у оператора, без секретов в коде расширения):</p>
-    <ul>
-      <li><a id="repo-link" href="#" target="_blank" rel="noopener">Репозиторий на GitHub</a></li>
-      <li><a id="changelog-link" href="#" target="_blank" rel="noopener">История изменений (CHANGELOG)</a></li>
-      <li>Лицензия: MIT — можно смотреть, форкать и предлагать правки</li>
-    </ul>
-    <p>Обновления публикуются в CHANGELOG и через Telegram-бот. Версия расширения отображается в popup.</p>
+    <h2>Обновления</h2>
+    <p>
+      Расширение не из Chrome Web Store. Новые версии скачиваются с
+      <a href="https://halyavka.online/extension/">halyavka.online/extension/</a>
+      (<code>version.json</code> + zip). Исходники и CHANGELOG — в открытом репозитории.
+      В popup: «Отвязать этот ПК» сбрасывает токен на устройстве.
+    </p>
   </div>
 
-  <p style="font-size:12px;color:#6b7280">Если что-то непонятно — напишите в Telegram-бот поддержки или откройте issue в репозитории.</p>
+  <div class="card">
+    <h2>Открытый исходный код</h2>
+    <ul>
+      <li><a id="repo-link" href="#" target="_blank" rel="noopener">Репозиторий на GitHub</a></li>
+      <li><a id="changelog-link" href="#" target="_blank" rel="noopener">CHANGELOG</a></li>
+      <li>Лицензия: MIT</li>
+    </ul>
+  </div>
+
+  <p style="font-size:12px;color:#6b7280">Вопросы — Telegram-бот или issue в репозитории.</p>
 
   <script src="constants.js"></script>
   <script>
@@ -136,7 +166,8 @@
       wb: "Цена и наличие",
       steam: "Цена игры",
       avito: "Цена объявления",
-      tutu: "Билеты на поезд (маршрут, появление мест)",
+      tutu: "Билеты (маршрут / места)",
+      aviasales: "Авиапоиск",
       yandex_market: "Цена товара",
       dns: "Цена техники",
       goldapple: "Цена косметики",

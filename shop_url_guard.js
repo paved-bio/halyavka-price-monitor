@@ -4,8 +4,12 @@
 var PMShopUrl = (function () {
   const OZON_BAD_MARKERS = [
     /\/product\/journey-/i,
+    /\/product\/halyavka-sim-/i,
     /\/product\/highlight-/i,
     /\/product\/category\//i,
+    /\/product\/virt_/i,
+    /\/product\/combat_/i,
+    /\/product\/day-/i,
   ];
   const OZON_PRODUCT_PATH = /\/product\/(?:[^/?#]+-)?\d{5,}\/?$/i;
 

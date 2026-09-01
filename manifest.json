@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Price Monitor",
-  "version": "1.8.23",
-  "description": "Трекер цен Ozon/WB/Яндекс Маркет/DNS/Gold Apple/Steam/Avito/Tutu.",
+  "version": "1.10.16",
+  "description": "Трекер цен Ozon/WB/Aviasales/Tutu и др. Соло и Воркер; Premium за достижения.",
   "permissions": ["storage", "alarms", "tabs", "idle", "scripting", "notifications", "nativeMessaging"],
   "host_permissions": [
     "http://127.0.0.1:8760/*",
     "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8080/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
     "https://halyavka.online/*",
@@ -20,6 +21,9 @@
     "https://avito.ru/*",
     "https://*.tutu.ru/*",
     "https://tutu.ru/*",
+    "https://avia.tutu.ru/*",
+    "https://*.aviasales.ru/*",
+    "https://aviasales.ru/*",
     "https://*.market.yandex.ru/*",
     "https://market.yandex.ru/*",
     "https://*.dns-shop.ru/*",
@@ -42,10 +46,6 @@
     "https://twitch.tv/*",
     "http://127.0.0.1:8766/*"
   ],
-  "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
-  ],
   "content_scripts": [
     {
       "matches": ["https://halyavka.online/earn/*", "http://127.0.0.1/*/earn/*", "http://localhost/*/earn/*"],
@@ -57,10 +57,54 @@
         "https://*.ozon.ru/product/*",
         "https://ozon.ru/product/*",
         "https://*.wildberries.ru/catalog/*/detail.aspx*",
-        "https://wildberries.ru/catalog/*/detail.aspx*"
+        "https://wildberries.ru/catalog/*/detail.aspx*",
+        "https://*.market.yandex.ru/card/*",
+        "https://market.yandex.ru/card/*",
+        "https://*.market.yandex.ru/product--*",
+        "https://market.yandex.ru/product--*",
+        "https://*.dns-shop.ru/product/*",
+        "https://dns-shop.ru/product/*",
+        "https://*.citilink.ru/product/*",
+        "https://citilink.ru/product/*",
+        "https://*.mvideo.ru/products/*",
+        "https://mvideo.ru/products/*",
+        "https://*.detmir.ru/product/*",
+        "https://detmir.ru/product/*",
+        "https://*.goldapple.ru/*",
+        "https://goldapple.ru/*",
+        "https://*.tutu.ru/poezda/*",
+        "https://tutu.ru/poezda/*",
+        "https://*.tutu.ru/aviabilety/*",
+        "https://tutu.ru/aviabilety/*",
+        "https://avia.tutu.ru/*",
+        "https://*.aviasales.ru/search/*",
+        "https://aviasales.ru/search/*"
       ],
       "js": ["utils_price.js", "comparison_widget.js"],
       "css": ["comparison_widget.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.ozon.ru/*",
+        "https://ozon.ru/*",
+        "https://*.wildberries.ru/*",
+        "https://wildberries.ru/*",
+        "https://*.steampowered.com/*",
+        "https://*.avito.ru/*",
+        "https://*.tutu.ru/*",
+        "https://avia.tutu.ru/*",
+        "https://*.aviasales.ru/*",
+        "https://*.market.yandex.ru/*",
+        "https://*.dns-shop.ru/*",
+        "https://*.goldapple.ru/*",
+        "https://*.citilink.ru/*",
+        "https://*.mvideo.ru/*",
+        "https://*.detmir.ru/*",
+        "https://*.lemanapro.ru/*",
+        "https://*.leroymerlin.ru/*"
+      ],
+      "js": ["referral_rewrite.js"],
       "run_at": "document_idle"
     }
   ],

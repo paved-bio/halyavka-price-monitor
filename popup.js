@@ -58,7 +58,13 @@ const SHOP_PATTERNS = [
   },
   {
     shop_id: "tutu",
-    regex: /(?:https?:\/\/)?(?:www\.)?tutu\.ru(\/poezda\/[^?#]+)/i,
+    regex:
+      /(?:https?:\/\/)?(?:www\.|avia\.)?tutu\.ru(\/(?:poezda|aviabilety|route|f)\/[^?#]+)/i,
+    product_id: (match) => match[1],
+  },
+  {
+    shop_id: "aviasales",
+    regex: /(?:https?:\/\/)?(?:www\.)?aviasales\.ru(\/search\/[^?#]+)/i,
     product_id: (match) => match[1],
   },
   {
@@ -103,6 +109,27 @@ function shopLabel(shopId) {
   return hit?.label || shopId;
 }
 
+const TUTU_ROUTE0_TOKEN = /^\d+-\d{8}-\d+$/;
+
+function tutuProductIdWithRoute(url, productId) {
+  const base = productId.replace(/\/$/, "");
+  if (!base.startsWith("/f/")) return base;
+  const last = base.split("/").pop();
+  if (TUTU_ROUTE0_TOKEN.test(last)) return base;
+  const m = url.match(/route\[0\]=([^&#]+)/i);
+  if (!m) return base;
+  const token = m[1].trim();
+  return TUTU_ROUTE0_TOKEN.test(token) ? `${base}/${token}` : base;
+}
+
+function formatTutuProductLabel(product) {
+  if (product.shop_id !== "tutu") return product.product_id;
+  const m = product.product_id.match(/(\d+)-(\d{2})(\d{2})(\d{4})-(\d+)$/);
+  if (!m) return product.product_id;
+  const routePart = product.product_id.replace(/\/\d+-\d{8}-\d+$/, "");
+  return `${routePart} · ${parseInt(m[2], 10)}.${m[3]}.${m[4]}`;
+}
+
 function parseProductFromUrl(url) {
   const clean = url.split("?")[0].split("#")[0].trim();
   if (/ozon\.ru\/search(?:\/|\?)/i.test(url)) {
@@ -111,11 +138,18 @@ function parseProductFromUrl(url) {
   for (const shop of SHOP_PATTERNS) {
     const match = clean.match(shop.regex);
     if (match) {
-      const product_id = shop.product_id(match);
+      let product_id = shop.product_id(match);
       if (shop.shop_id === "ozon" && /\/product\/journey-/i.test(product_id)) {
         return null;
       }
-      return { shop_id: shop.shop_id, product_id, source_url: clean };
+      if (shop.shop_id === "tutu") {
+        product_id = tutuProductIdWithRoute(url, product_id);
+      }
+      // avia.tutu.ru/f/… — дата рейса в query, сохраняем полный URL
+      const source_url = /avia\.tutu\.ru\/f\//i.test(url)
+        ? url.split("#")[0].trim()
+        : clean;
+      return { shop_id: shop.shop_id, product_id, source_url };
     }
   }
   return null;
@@ -183,9 +217,110 @@ async function fetchUserStatus() {
   await chrome.storage.local.set({
     is_worker_mode: status.is_worker_mode,
     can_add_tasks: status.can_add_tasks,
+    can_use_widget: status.can_use_widget,
+    can_use_referrals: status.can_use_referrals,
+    tracker_mode: status.tracker_mode || "worker",
+    exchange_public_enabled: status.exchange_public_enabled,
     user_status: status,
   });
   return status;
+}
+
+async function setTrackerMode(mode) {
+  const res = await apiFetch("/user/tracker_mode", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail?.message || err.detail || `Ошибка ${res.status}`);
+  }
+  const data = await res.json();
+  if (mode !== "solo") {
+    const solo = await SoloTasks.list();
+    if (solo.length > 0 && confirm(`Перенести ${solo.length} локальных задач в облако?`)) {
+      await migrateSoloTasksToCloud();
+    }
+  }
+  await fetchUserStatus();
+  return data;
+}
+
+async function migrateSoloTasksToCloud() {
+  const tasks = await SoloTasks.list();
+  for (const t of tasks) {
+    try {
+      await apiFetch("/tasks/add", {
+        method: "POST",
+        body: JSON.stringify({
+          shop_id: t.shop_id,
+          product_id: t.product_id,
+          target_price: t.target_price,
+          monitor_type: t.monitor_type,
+          source_url: t.source_url,
+        }),
+      });
+    } catch {
+      /* skip failed */
+    }
+  }
+  await SoloTasks.saveAll([]);
+}
+
+async function loadReferralUI() {
+  const sec = document.getElementById("referral-section");
+  if (!sec) return;
+  try {
+    const res = await apiFetch("/user/referral");
+    if (!res.ok) return;
+    const data = await res.json();
+    sec.classList.remove("hidden");
+    document.getElementById("referral-link-line").textContent = data.link;
+    document.getElementById("referral-stats").textContent =
+      `Приглашено: ${data.invited_count} · бонус Premium: ${data.premium_days_earned} дн.`;
+    document.getElementById("referral-copy-btn").onclick = async () => {
+      await navigator.clipboard.writeText(data.link);
+    };
+  } catch {
+    sec.classList.add("hidden");
+  }
+}
+
+function renderModeUI(status) {
+  const modeSec = document.getElementById("mode-section");
+  const soloBanner = document.getElementById("solo-pressure");
+  const mode = status?.tracker_mode || "worker";
+  const labels = { solo: "Соло (локально)", worker: "Воркер", premium: "Premium" };
+  if (modeSec) {
+    modeSec.classList.remove("hidden");
+    document.getElementById("tracker-mode-label").textContent = labels[mode] || mode;
+  }
+  soloBanner?.classList.toggle("hidden", mode !== "solo");
+}
+
+function showOnboardingStep(n) {
+  const overlay = document.getElementById("onboarding-overlay");
+  if (!overlay) return;
+  overlay.classList.remove("hidden");
+  [1, 2, 3].forEach((i) => {
+    document.getElementById(`onb-step-${i}`)?.classList.toggle("active", i === n);
+  });
+}
+
+async function finishOnboarding({ localSolo = false } = {}) {
+  const { session_token } = await chrome.storage.local.get(["session_token"]);
+  if (localSolo || !session_token) {
+    await chrome.storage.local.set({
+      onboarding_complete: true,
+      tracker_mode: "solo",
+      is_solo: true,
+      popup_notifications_enabled: true,
+    });
+  } else {
+    // Не фиксируем worker/premium при старте — серверный триал и выбор режима позже.
+    await chrome.storage.local.set({ onboarding_complete: true });
+  }
+  document.getElementById("onboarding-overlay")?.classList.add("hidden");
 }
 
 async function setWorkerMode(enabled) {
@@ -200,14 +335,33 @@ async function setWorkerMode(enabled) {
   return res.json();
 }
 
-async function activatePremium() {
-  const res = await apiFetch("/user/premium/activate", { method: "POST" });
+async function startPremiumCheckout({ autorenew = false } = {}) {
+  const res = await apiFetch("/user/premium/checkout", {
+    method: "POST",
+    body: JSON.stringify({
+      autorenew,
+      return_url: "https://halyavka.online/extension/",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || `Ошибка ${res.status}`);
+    const detail = data.detail;
+    const msg =
+      typeof detail === "string"
+        ? detail
+        : detail?.message || data.message || `Ошибка ${res.status}`;
+    throw new Error(msg);
   }
-  return res.json();
+  if (data.confirmation_url) {
+    chrome.tabs.create({ url: data.confirmation_url });
+    return data;
+  }
+  throw new Error(
+    data.message ||
+      "Покупка Premium закрыта. Включите Воркер бесплатно — Premium за достижения.",
+  );
 }
+
 
 function formatPrice(n) {
   if (n == null || n <= 0) return "—";
@@ -221,11 +375,15 @@ function formatTelegramId(tgId) {
 }
 
 function renderTierPanels(status) {
-  const isAdventurer = Boolean(status?.can_earn);
+  const exchangeOn = Boolean(status?.exchange_public_enabled);
+  const isAdventurer = exchangeOn && Boolean(status?.can_earn);
   const connected = Boolean(status?.tg_id);
 
   document.getElementById("earn-section")?.classList.toggle("hidden", !isAdventurer);
-  document.getElementById("adventurer-teaser")?.classList.toggle("hidden", isAdventurer || !connected);
+  document.getElementById("adventurer-teaser")?.classList.toggle(
+    "hidden",
+    isAdventurer || !connected || !exchangeOn,
+  );
   document.getElementById("transparency-earn-li")?.classList.toggle("hidden", !isAdventurer);
   document.getElementById("earn-page-link")?.classList.toggle("hidden", !isAdventurer);
 }
@@ -262,25 +420,69 @@ function renderAccountUI(status, elements) {
   tasksSection.classList.add("hidden");
 
   const tgLine = formatTelegramId(status.tg_id);
+  const isSolo = status.is_solo || status.tracker_mode === "solo";
+  const frozen = Boolean(status.tasks_frozen || status.in_grace);
 
-  if (status.is_premium) {
+  const paywallTitle = document.getElementById("paywall-title");
+  const paywallDesc = document.getElementById("paywall-desc");
+  const autorenewEl = document.getElementById("premium-autorenew");
+  if (autorenewEl) autorenewEl.checked = Boolean(status.premium_autorenew);
+
+  if (isSolo && !status.tg_id) {
+    showStatus(accountStatus, "Соло (без Telegram) — данные только на этом ПК", "warn");
+    monitorSection.classList.remove("hidden");
+    tasksSection.classList.remove("hidden");
+    renderModeUI({ tracker_mode: "solo", is_solo: true });
+    renderTierPanels(status);
+    return;
+  }
+
+  if (isSolo) {
+    showStatus(accountStatus, `${tgLine}\nСоло-режим — данные только на этом ПК`, "warn");
+    monitorSection.classList.remove("hidden");
+    tasksSection.classList.remove("hidden");
+    renderModeUI(status);
+    renderTierPanels(status);
+    return;
+  }
+
+  if (frozen) {
+    const left = status.grace_days_left != null ? status.grace_days_left : "?";
+    showStatus(
+      accountStatus,
+      `${tgLine}\nОблако на паузе · задачи сохранены ещё ~${left} дн.`,
+      "warn",
+    );
+    if (paywallTitle) paywallTitle.textContent = "Включите Воркер — задачи ждут";
+    if (paywallDesc) {
+      paywallDesc.textContent =
+        "Мониторинг и сравнение цен выключены. Список задач виден. " +
+        "Воркер бесплатно — и работа продолжится без перенастройки. " +
+        "Premium не продаётся; выдаётся за достижения. " +
+        `До удаления с сервера: ~${left} дн.`;
+    }
+    paywallSection.classList.remove("hidden");
+    monitorSection.classList.add("hidden");
+    tasksSection.classList.remove("hidden");
+    workerToggle.checked = false;
+  } else if (status.is_premium || status.tracker_mode === "premium") {
     showStatus(
       accountStatus,
       `${tgLine}\nПремиум до ${status.premium_until?.slice(0, 10) || "—"}`,
-      "ok"
+      "ok",
     );
   } else if (status.trial_active) {
     showStatus(
       accountStatus,
       `${tgLine}\nТриал: осталось ${status.trial_days_left ?? "?"} дн.`,
-      "info"
+      "info",
     );
   } else if (status.is_worker_mode) {
     if (status.worker_suspended) {
       showStatus(
         accountStatus,
-        `${tgLine}\nВоркер приостановлен — включите браузер или оформи подписку`,
-        "warn"
+        `${tgLine}\nВоркер приостановлен — включите режим Воркер снова`,
+        "warn",
       );
       paywallSection.classList.remove("hidden");
     } else {
@@ -289,7 +491,7 @@ function renderAccountUI(status, elements) {
     workerSection.classList.remove("hidden");
     workerToggleActive.checked = true;
   } else {
-    showStatus(accountStatus, `${tgLine}\nТриал закончился`, "warn");
+    showStatus(accountStatus, `${tgLine}\nВключите Воркер для облака`, "warn");
     paywallSection.classList.remove("hidden");
     workerToggle.checked = false;
   }
@@ -299,15 +501,21 @@ function renderAccountUI(status, elements) {
     tasksSection.classList.remove("hidden");
   }
 
-  if (status.is_worker_mode && status.can_add_tasks && !status.is_premium) {
+  if (status.is_worker_mode && !status.is_premium && !frozen) {
     workerSection.classList.remove("hidden");
-    workerToggleActive.checked = true;
+    workerToggleActive.checked = Boolean(status.is_worker_mode);
+    const idle = status.worker_idle_minutes ?? 5;
+    document.querySelectorAll('input[name="worker-idle"]').forEach((el) => {
+      el.checked = String(el.value) === String(idle);
+    });
   }
 
   renderReputationUI(status, elements);
   renderActivityStatus(status);
   renderTierPanels(status);
+  renderModeUI(status);
   renderTasksLimit(status);
+  loadReferralUI();
 }
 
 function renderReputationUI(status, elements) {
@@ -318,7 +526,7 @@ function renderReputationUI(status, elements) {
 
   const pts = Number(status.reputation_points || 0);
   const rank = Number(status.reputation_rank || 0);
-  const show = status.can_earn && (pts > 0 || rank > 0);
+  const show = (status.is_worker_mode || status.can_earn) && (pts > 0 || rank > 0);
   box.classList.toggle("hidden", !show);
   ptsEl.textContent = String(pts);
   rankEl.textContent = rank > 0 ? ` · место #${rank}` : "";
@@ -426,18 +634,39 @@ document.addEventListener("DOMContentLoaded", async () => {
     const latest =
       stored.update_version ||
       (metaLatest && pmUpdateAvailable(PM_EXTENSION.version, metaLatest) ? metaLatest : null);
-    if (!latest) {
+    if (!latest || !pmUpdateAvailable(PM_EXTENSION.version, latest)) {
       updateBanner.classList.add("hidden");
       return;
     }
 
-    const extra = await chrome.storage.local.get(["native_update_available"]);
+    const extra = await chrome.storage.local.get([
+      "native_update_available",
+      "update_detected_at",
+    ]);
+    updateBanner.classList.remove("hidden");
+
     if (extra.native_update_available === false) {
-      updateBanner.classList.add("hidden");
+      updateBanner.innerHTML =
+        `Доступна версия <strong>${latest}</strong>. Автообновление сломано — ` +
+        `<button type="button" id="enable-auto-update-btn" class="btn-link">починить (один раз)</button>.`;
+      document.getElementById("enable-auto-update-btn")?.addEventListener("click", () => {
+        chrome.runtime.sendMessage({ type: "OPEN_AUTO_UPDATE_SETUP" });
+      });
       return;
     }
 
-    updateBanner.classList.add("hidden");
+    updateBanner.innerHTML =
+      `Доступна версия <strong>${latest}</strong> — обновляем автоматически… ` +
+      `<button type="button" id="apply-update-btn" class="btn-link">Обновить сейчас</button>`;
+    document.getElementById("apply-update-btn")?.addEventListener("click", async () => {
+      const btn = document.getElementById("apply-update-btn");
+      if (btn) btn.textContent = "Обновляем…";
+      chrome.runtime.sendMessage({ type: "APPLY_EXTENSION_UPDATE" }, () => {
+        if (btn) btn.textContent = "Обновить сейчас";
+      });
+    });
+    // Подтолкнуть SW, если popup открыли раньше, чем доехал poll.
+    chrome.runtime.sendMessage({ type: "APPLY_EXTENSION_UPDATE" });
   }
 
   async function loadPublicMeta() {
@@ -523,7 +752,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     currentProduct = url ? parseProductFromUrl(url) : null;
     if (currentProduct) {
       productInfo.textContent =
-        `${shopLabel(currentProduct.shop_id)} · ${currentProduct.product_id}`;
+        `${shopLabel(currentProduct.shop_id)} · ${formatTutuProductLabel(currentProduct)}`;
       productInfo.classList.remove("hidden");
     } else if (pasted || url) {
       productInfo.textContent =
@@ -555,17 +784,42 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function loadTasks() {
     try {
+      const st = (await chrome.storage.local.get(["user_status"])).user_status;
+      if (st?.is_solo || st?.tracker_mode === "solo") {
+        const solo = await SoloTasks.list();
+        renderTasksLimit(st, solo.length);
+        if (!solo.length) {
+          tasksList.textContent = "Пока нет локальных отслеживаний (Соло).";
+          return;
+        }
+        tasksList.innerHTML = "";
+        for (const task of solo) {
+          const item = document.createElement("div");
+          item.className = "task-item";
+          item.innerHTML = `
+            <strong>${shopLabel(task.shop_id)}</strong> (локально)<br>
+            ${task.title || task.product_id}<br>
+            Цель: ${formatPrice(task.target_price)} · Сейчас: ${formatPrice(task.last_price)}
+            <button type="button" data-solo-id="${task.id}">Удалить</button>
+          `;
+          item.querySelector("button").addEventListener("click", async () => {
+            await SoloTasks.remove(task.id);
+            await loadTasks();
+          });
+          tasksList.appendChild(item);
+        }
+        return;
+      }
       const res = await apiFetch("/tasks/list");
       if (!res.ok) throw new Error(`Список: ошибка ${res.status}`);
       const data = await res.json();
+      const status = (await chrome.storage.local.get(["user_status"])).user_status;
       if (!data.tasks?.length) {
         tasksList.textContent = "Пока нет отслеживаемых товаров.";
-        const st = (await chrome.storage.local.get(["user_status"])).user_status;
-        renderTasksLimit(st, 0);
+        renderTasksLimit(status, 0);
         return;
       }
-      const st = (await chrome.storage.local.get(["user_status"])).user_status;
-      renderTasksLimit(st, data.tasks.length);
+      renderTasksLimit(status, data.tasks.length);
       tasksList.innerHTML = "";
       for (const task of data.tasks) {
         const item = document.createElement("div");
@@ -683,9 +937,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (_) {
       /* consent not yet */
     }
-    if (!selected.length && status.earn_categories?.length) {
-      selected = status.earn_categories.map((c) => c.id);
-    }
     if (selected.length || userStealth) {
       await chrome.storage.local.set({
         earn_allowed_categories: selected,
@@ -785,7 +1036,8 @@ async function saveEarnCategories() {
       earn_user_stealth: stealth,
       earn_run_mode,
     });
-    document.getElementById("earn-consent-hint")?.classList.add("hidden");
+    document.getElementById("earn-consent-hint")?.classList.remove("hidden");
+    // Keep risk warning visible; soft note that consent was saved
     const modeLabel = earn_run_mode === "always" ? "сразу" : "в простое";
     showStatus(saveStatus, `Сохранено: ${picked.length} категорий · ${stealth.preset} · ${modeLabel}`, "ok");
     await syncUserStatusFromPopup();
@@ -817,10 +1069,139 @@ async function saveEarnCategories() {
     await refreshProductUI();
     await loadPickedXpath();
     await loadTasks();
+    await loadReferralUI();
   }
 
-  const stored = await chrome.storage.local.get(["session_token", "tg_id"]);
-  if (stored.session_token && stored.tg_id) {
+  async function completeOnboardingAndEnter() {
+    const { session_token } = await chrome.storage.local.get(["session_token"]);
+    await finishOnboarding({ localSolo: !session_token });
+    if (session_token) {
+      await onConnected();
+    } else {
+      authSection.classList.add("hidden");
+      renderAccountUI(
+        { tracker_mode: "solo", is_solo: true, can_add_tasks: false },
+        elements,
+      );
+      await loadTasks();
+    }
+  }
+
+  document.getElementById("onb-done-btn")?.addEventListener("click", async () => {
+    try {
+      await completeOnboardingAndEnter();
+    } catch (e) {
+      showStatus(document.getElementById("onb-auth-status"), e.message, "err");
+    }
+  });
+
+  document.getElementById("onb-solo-local-btn")?.addEventListener("click", async () => {
+    try {
+      // Локальный старт: сразу на экран «как устроено», без выбора роли.
+      await chrome.storage.local.set({
+        tracker_mode: "solo",
+        is_solo: true,
+        popup_notifications_enabled: true,
+      });
+      showOnboardingStep(3);
+    } catch (e) {
+      showStatus(document.getElementById("onb-auth-status"), e.message, "err");
+    }
+  });
+
+  document.getElementById("onb-step2-skip")?.addEventListener("click", () => {
+    showOnboardingStep(3);
+  });
+
+  document.getElementById("onb-connect-btn")?.addEventListener("click", async () => {
+    const code = document.getElementById("onb-connect-code").value.replace(/\D/g, "").slice(0, 4);
+    const statusEl = document.getElementById("onb-auth-status");
+    if (!/^\d{4}$/.test(code)) {
+      showStatus(statusEl, "Введите 4 цифры", "err");
+      return;
+    }
+    try {
+      const pending = await chrome.storage.local.get(["pending_referral_code"]);
+      const res = await publicFetch("/auth/connect", {
+        method: "POST",
+        body: JSON.stringify({
+          connect_code: code,
+          referral_code: pending.pending_referral_code || null,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Ошибка ${res.status}`);
+      }
+      const data = await res.json();
+      await chrome.storage.local.set({
+        session_token: data.session_token,
+        tg_id: data.tg_id,
+        pending_referral_code: null,
+      });
+      await pmPersistSession();
+      showOnboardingStep(2);
+    } catch (e) {
+      showStatus(statusEl, e.message, "err");
+    }
+  });
+
+  document.getElementById("onb-step2-next")?.addEventListener("click", () => {
+    showOnboardingStep(3);
+  });
+
+  chrome.storage.local.get(["popup_notifications_enabled"]).then((s) => {
+    const t = document.getElementById("popup-notify-toggle");
+    if (t) t.checked = s.popup_notifications_enabled !== false;
+  });
+  document.getElementById("popup-notify-toggle")?.addEventListener("change", async (ev) => {
+    await chrome.storage.local.set({ popup_notifications_enabled: ev.target.checked });
+  });
+
+  document.querySelectorAll('input[name="worker-idle"]').forEach((el) => {
+    el.addEventListener("change", async () => {
+      if (!el.checked) return;
+      const minutes = parseInt(el.value, 10);
+      try {
+        await apiFetch("/user/worker_idle", {
+          method: "POST",
+          body: JSON.stringify({ minutes }),
+        });
+        await chrome.storage.local.set({ worker_idle_minutes: minutes });
+      } catch (e) {
+        showStatus(accountStatus, e.message, "err");
+      }
+    });
+  });
+
+  ["mode-worker-btn"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("click", async () => {
+      try {
+        await setTrackerMode("worker");
+        const status = await fetchUserStatus();
+        renderAccountUI(status, elements);
+        await loadTasks();
+      } catch (e) {
+        showStatus(accountStatus, e.message, "err");
+      }
+    });
+  });
+  // Premium buy UI hidden — grant via achievements / admin / referrals only.
+  document.getElementById("mode-solo-btn")?.addEventListener("click", async () => {
+    try {
+      await setTrackerMode("solo");
+      const status = await fetchUserStatus();
+      renderAccountUI(status, elements);
+      await loadTasks();
+    } catch (e) {
+      showStatus(accountStatus, e.message, "err");
+    }
+  });
+
+  const stored = await chrome.storage.local.get(["session_token", "tg_id", "onboarding_complete"]);
+  if (!stored.onboarding_complete) {
+    showOnboardingStep(stored.session_token ? 2 : 1);
+  } else if (stored.session_token && stored.tg_id) {
     try {
       await onConnected();
     } catch (e) {
@@ -862,19 +1243,32 @@ async function saveEarnCategories() {
     }
   });
 
-  premiumBtn.addEventListener("click", async () => {
-    premiumBtn.disabled = true;
+  document.getElementById("revoke-session-btn")?.addEventListener("click", async () => {
+    const btn = document.getElementById("revoke-session-btn");
+    if (!confirm("Отвязать этот ПК? Нужен будет новый код из бота.")) return;
+    if (btn) btn.disabled = true;
     try {
-      await activatePremium();
-      const status = await fetchUserStatus();
-      renderAccountUI(status, elements);
-      showStatus(paywallStatus, "Премиум активирован (stub)", "ok");
+      try {
+        await apiFetch("/user/revoke-session", { method: "POST", body: "{}" });
+      } catch (_) {
+        /* still clear local even if offline */
+      }
+      await pmClearSessionLocal();
+      accountSection.classList.add("hidden");
+      authSection.classList.remove("hidden");
+      showStatus(authStatus, "ПК отвязан. Введите новый код из бота.", "ok");
     } catch (e) {
-      showStatus(paywallStatus, e.message, "err");
+      showStatus(accountStatus, e.message, "err");
     } finally {
-      premiumBtn.disabled = false;
+      if (btn) btn.disabled = false;
     }
   });
+
+  if (premiumBtn) {
+    premiumBtn.classList.add("hidden");
+    premiumBtn.disabled = true;
+  }
+  document.getElementById("premium-autorenew")?.closest("label")?.classList.add("hidden");
 
   workerToggle.addEventListener("change", async () => {
     if (!workerToggle.checked) return;
@@ -947,6 +1341,21 @@ async function saveEarnCategories() {
 
     monitorBtn.disabled = true;
     try {
+      const st = (await chrome.storage.local.get(["user_status"])).user_status;
+      if (st?.is_solo || st?.tracker_mode === "solo") {
+        await SoloTasks.add({
+          shop_id: currentProduct.shop_id,
+          product_id: currentProduct.product_id,
+          target_price: targetPrice,
+          source_url: currentProduct.source_url,
+          monitor_type: monitorType,
+        });
+        showStatus(monitorStatus, "Добавлено локально (Соло). Уведомление — только на этом ПК.", "ok");
+        chrome.runtime.sendMessage({ type: "SOLO_SCHEDULE_CHECK" });
+        await loadTasks();
+        return;
+      }
+
       const body = {
         shop_id: currentProduct.shop_id,
         product_id: currentProduct.product_id,
@@ -965,11 +1374,11 @@ async function saveEarnCategories() {
       if (res.status === 402) {
         const err = await res.json().catch(() => ({}));
         const detail = err.detail || {};
-        showStatus(
-          monitorStatus,
-          `Триал закончился. Подписка: ${detail.subscription_price || 100} ₽`,
-          "warn"
-        );
+        const msg =
+          typeof detail === "object" && detail.message
+            ? detail.message
+            : "Триал закончился. Включите Воркер бесплатно — Premium за достижения.";
+        showStatus(monitorStatus, msg, "warn");
         const status = await fetchUserStatus();
         renderAccountUI(status, elements);
         return;
@@ -984,6 +1393,17 @@ async function saveEarnCategories() {
       const data = await res.json();
       showStatus(monitorStatus, "Проверяю цену…", "ok");
       let hbMsg = data.message || `Мониторинг #${data.task_id} принят`;
+      if (currentProduct.shop_id === "aviasales") {
+        hbMsg +=
+          "\nAviasales: трекается страница поиска маршрута (не бронь места). При пустой выдаче — «нет билетов».";
+      }
+      if (
+        currentProduct.shop_id === "tutu" &&
+        /\/(?:aviabilety|route|f)\//i.test(currentProduct.product_id || "")
+      ) {
+        hbMsg +=
+          "\nTutu авиа: мониторинг страницы поиска с датой (URL вида avia.tutu.ru/f/…?route[0]=…).";
+      }
       try {
         const hb = await triggerWorkerHeartbeat(data.task_id);
         const extra = formatHeartbeatResult(hb, data.task_id);

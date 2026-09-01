@@ -1,19 +1,143 @@
-importScripts("utils_price.js", "api_config.js", "constants.js", "session_store.js", "canonical_json.js", "integrity.js", "category_hosts.js", "shop_url_guard.js");
+importScripts("utils_price.js", "api_config.js", "constants.js", "session_store.js", "canonical_json.js", "integrity.js", "category_hosts.js", "shop_url_guard.js", "solo_tasks.js", "compare_match.js");
 
 const ALARM_NAME = "price-monitor-heartbeat";
+const SOLO_ALARM = "price-monitor-solo-check";
 const UPDATE_ALARM = "price-monitor-update-check";
 const HEARTBEAT_MINUTES = 2;
+const WORKER_SESSION_MAX_JOBS = 40;
+const WORKER_JOB_PAUSE_MIN_MS = 1500;
+const WORKER_JOB_PAUSE_MAX_MS = 3000;
 const UPDATE_CHECK_MINUTES = 2;
 const UPDATE_CHECK_INTERVAL_MS = UPDATE_CHECK_MINUTES * 60 * 1000;
-const UPDATE_AUTO_INSTALL_DELAY_MS = 30 * 1000;
-const UPDATE_APPLY_RETRY_MS = 90 * 1000;
-const NATIVE_POLL_COOLDOWN_MS = 90 * 1000;
+/** Сразу ставим файлы и reload — без «подождите 30с / нажмите кнопку». */
+const UPDATE_AUTO_INSTALL_DELAY_MS = 0;
+const UPDATE_APPLY_RETRY_MS = 45 * 1000;
+const NATIVE_POLL_COOLDOWN_MS = 60 * 1000;
 const NATIVE_HOST = "com.halyavka.pricemonitor";
 const VERSION_JSON_URL = "https://halyavka.online/extension/version.json";
 const EXTENSION_INSTALL_URL = "https://halyavka.online/extension/";
-const IDLE_THRESHOLD_SEC = 300;
+const AUTO_UPDATE_SETUP_URL = "https://halyavka.online/extension/auto-update.html";
 const TAB_LOAD_TIMEOUT_MS = 50000;
 const TAB_SETTLE_AFTER_LOAD_MS = 1200;
+/** SPA/антибот часто отдаёт пустой body сразу после complete — ждём дольше перед вердиктом. */
+const TAB_SPARSE_BODY_RETRY_MS = 7000;
+const TAB_SPARSE_BODY_THRESHOLD = 800;
+const SHOP_CONFIG_TTL_MS = 30 * 60 * 1000;
+/**
+ * После N «магазин не открывается» на этом воркере — не открываем вкладки TTL часов.
+ * Храним в chrome.storage.local: MV3 service worker часто убивают, Map в памяти сбрасывается.
+ */
+const SESSION_SHOP_LOAD_FAIL_LIMIT = 2;
+const SESSION_SHOP_SKIP_TTL_MS = 6 * 60 * 60 * 1000;
+const SHOP_FAIL_STORAGE_KEY = "session_shop_load_fails";
+
+/** Не стартовать второй drain, пока первый ещё крутит вкладки. */
+let heartbeatInFlight = false;
+let earnBatchInFlight = false;
+
+/** Кэш в памяти + persist; подгружаем перед heartbeat. */
+let sessionShopLoadFails = Object.create(null);
+
+function pruneExpiredShopFails(map) {
+  const now = Date.now();
+  const src = map || sessionShopLoadFails;
+  for (const shopId of Object.keys(src)) {
+    const entry = src[shopId];
+    if (entry?.skippedUntil && entry.skippedUntil <= now) {
+      delete src[shopId];
+    }
+  }
+  return src;
+}
+
+function isShopUnreachableError(parseError) {
+  const t = String(parseError || "");
+  if (!t || /^session_shop_skip:/i.test(t)) return false;
+  return /таймаут|page_not_ready|antibot|пустой результат|не удалось определить|could not establish|frame was removed|no tab with id|net::|ERR_|connection|доступ ограничен|access denied|challenge|cloudflare|qrator|captcha/i.test(
+    t
+  );
+}
+
+async function loadShopFailState() {
+  try {
+    const stored = await chrome.storage.local.get([SHOP_FAIL_STORAGE_KEY]);
+    const raw = stored[SHOP_FAIL_STORAGE_KEY];
+    sessionShopLoadFails =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? { ...raw }
+        : Object.create(null);
+  } catch (_) {
+    sessionShopLoadFails = Object.create(null);
+  }
+  pruneExpiredShopFails();
+}
+
+async function saveShopFailState() {
+  pruneExpiredShopFails();
+  try {
+    await chrome.storage.local.set({ [SHOP_FAIL_STORAGE_KEY]: { ...sessionShopLoadFails } });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+async function noteShopLoadOutcome(shopId, parseError) {
+  if (!shopId) return;
+  pruneExpiredShopFails();
+  if (isShopUnreachableError(parseError)) {
+    const prev = sessionShopLoadFails[shopId] || { count: 0, skippedUntil: 0 };
+    const count = (prev.count || 0) + 1;
+    const entry = { count, skippedUntil: prev.skippedUntil || 0 };
+    if (count >= SESSION_SHOP_LOAD_FAIL_LIMIT) {
+      entry.skippedUntil = Date.now() + SESSION_SHOP_SKIP_TTL_MS;
+      console.warn(
+        "[PriceMonitor] Магазин",
+        shopId,
+        "не открывается — пауза",
+        Math.round(SESSION_SHOP_SKIP_TTL_MS / 3600000),
+        "ч"
+      );
+    }
+    sessionShopLoadFails[shopId] = entry;
+    await saveShopFailState();
+  } else if (!parseError) {
+    if (sessionShopLoadFails[shopId]) {
+      delete sessionShopLoadFails[shopId];
+      await saveShopFailState();
+    }
+  }
+}
+
+function shopSkippedThisSession(shopId) {
+  pruneExpiredShopFails();
+  const entry = sessionShopLoadFails[shopId];
+  if (!entry) return false;
+  return (
+    (entry.count || 0) >= SESSION_SHOP_LOAD_FAIL_LIMIT &&
+    (entry.skippedUntil || 0) > Date.now()
+  );
+}
+
+async function getIdleThresholdSec() {
+  const { worker_idle_minutes, earn_run_mode } = await chrome.storage.local.get([
+    "worker_idle_minutes",
+    "earn_run_mode",
+  ]);
+  // 0 = always (treat as idle for P2P)
+  const mins = worker_idle_minutes;
+  if (mins === 0 || mins === "0") return 0;
+  const n = parseInt(mins, 10);
+  if ([5, 15, 30].includes(n)) return n * 60;
+  if (earn_run_mode === "always") return 0;
+  return 300;
+}
+
+async function popupNotifyAllowed() {
+  const { popup_notifications_enabled } = await chrome.storage.local.get([
+    "popup_notifications_enabled",
+  ]);
+  return popup_notifications_enabled !== false;
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -71,9 +195,11 @@ async function apiFetch(path, options = {}) {
   return authFetch(url, options);
 }
 
-function isUserIdle() {
+async function isUserIdle() {
+  const threshold = await getIdleThresholdSec();
+  if (threshold === 0) return true;
   return new Promise((resolve) => {
-    chrome.idle.queryState(IDLE_THRESHOLD_SEC, (state) => {
+    chrome.idle.queryState(threshold, (state) => {
       resolve(state === "idle" || state === "locked");
     });
   });
@@ -81,43 +207,56 @@ function isUserIdle() {
 
 function waitForTabComplete(tabId) {
   return new Promise((resolve, reject) => {
+    function cleanup() {
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    }
+
     const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
+      cleanup();
       reject(new Error("Таймаут загрузки вкладки"));
     }, TAB_LOAD_TIMEOUT_MS);
 
-    function listener(updatedId, info) {
+    function onUpdated(updatedId, info) {
       if (updatedId === tabId && info.status === "complete") {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
+        cleanup();
         setTimeout(resolve, TAB_SETTLE_AFTER_LOAD_MS);
+      }
+    }
+
+    function onRemoved(closedId) {
+      if (closedId === tabId) {
+        cleanup();
+        reject(new Error("Вкладка закрыта"));
       }
     }
 
     chrome.tabs.get(tabId, (tab) => {
       if (chrome.runtime.lastError) {
+        cleanup();
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
       if (tab.status === "complete") {
-        clearTimeout(timeout);
+        cleanup();
         setTimeout(resolve, TAB_SETTLE_AFTER_LOAD_MS);
         return;
       }
-      chrome.tabs.onUpdated.addListener(listener);
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs.onRemoved.addListener(onRemoved);
     });
   });
 }
 
-function injectAndParse(tabId, shopId, xpaths) {
-  const xpathList = Array.isArray(xpaths) ? xpaths : [xpaths];
+function injectAndParse(tabId, shopId, parseConfig) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error("Таймаут парсинга"));
     }, 20000);
 
     chrome.scripting.executeScript(
-      { target: { tabId }, files: ["shop_parse_page.js"] },
+      { target: { tabId }, files: ["utils_price.js", "shop_parse_page.js"] },
       () => {
         if (chrome.runtime.lastError) {
           clearTimeout(timeout);
@@ -127,8 +266,8 @@ function injectAndParse(tabId, shopId, xpaths) {
         chrome.scripting.executeScript(
           {
             target: { tabId },
-            func: (sid, xpathArgs) => window.PM_parseShopPage(sid, xpathArgs),
-            args: [shopId || null, xpathList],
+            func: (sid, cfg) => window.PM_parseShopPage(sid, cfg),
+            args: [shopId || null, parseConfig || {}],
           },
           (results) => {
             clearTimeout(timeout);
@@ -148,15 +287,71 @@ function injectAndParse(tabId, shopId, xpaths) {
             resolve({
               price: r.price ?? 0,
               in_stock: r.in_stock,
+              out_of_stock: Boolean(r.out_of_stock),
+              listing_closed: Boolean(r.listing_closed),
+              parse_status: r.parse_status || "ok",
               ean: r.ean || null,
               title: r.title || null,
               used_xpath: r.used_xpath || null,
+              kind: r.kind || null,
             });
           }
         );
       }
     );
   });
+}
+
+async function syncShopParseConfigs({ force = false } = {}) {
+  try {
+    const stored = await chrome.storage.local.get([
+      "shop_parse_configs_at",
+      "shop_parse_config_version",
+      "shop_parse_configs",
+    ]);
+    const withinTtl =
+      stored.shop_parse_configs_at &&
+      Date.now() - stored.shop_parse_configs_at < SHOP_CONFIG_TTL_MS;
+    const hasCache =
+      stored.shop_parse_configs && Object.keys(stored.shop_parse_configs).length > 0;
+
+    const url = await pmApiUrl("/meta/shops");
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const data = await res.json();
+    const remoteVer = data.parse_config_version || 0;
+    const localVer = stored.shop_parse_config_version || 0;
+
+    // Внутри TTL не пишем заново, пока сервер не поднял PARSE_CONFIG_VERSION
+    if (!force && withinTtl && hasCache && remoteVer <= localVer) {
+      return;
+    }
+
+    await chrome.storage.local.set({
+      shop_parse_configs: data.shops || {},
+      shop_parse_config_version: remoteVer,
+      shop_parse_configs_at: Date.now(),
+    });
+    console.log("[PriceMonitor] shop parse configs synced, version=", remoteVer);
+  } catch (e) {
+    console.warn("[PriceMonitor] syncShopParseConfigs:", e.message || e);
+  }
+}
+
+async function resolveParseConfig(shopId, xpathsOrConfig) {
+  if (xpathsOrConfig && !Array.isArray(xpathsOrConfig) && typeof xpathsOrConfig === "object") {
+    return xpathsOrConfig;
+  }
+  await syncShopParseConfigs();
+  const { shop_parse_configs } = await chrome.storage.local.get(["shop_parse_configs"]);
+  const cached = (shop_parse_configs && shop_parse_configs[shopId]) || {};
+  const xpaths = Array.isArray(xpathsOrConfig)
+    ? xpathsOrConfig
+    : cached.price_xpaths || [];
+  return {
+    ...cached,
+    price_xpaths: xpaths.length ? xpaths : cached.price_xpaths || [],
+  };
 }
 
 async function injectJobOverlay(tabId, mode) {
@@ -173,7 +368,7 @@ async function injectJobOverlay(tabId, mode) {
   });
 }
 
-async function parseViaBackgroundTab(url, shopId, xpaths) {
+async function parseViaBackgroundTab(url, shopId, xpathsOrConfig) {
   if (shopId === "ozon" && typeof PMShopUrl !== "undefined") {
     const preErr = PMShopUrl.ozonUrlError(url);
     if (preErr) {
@@ -182,6 +377,7 @@ async function parseViaBackgroundTab(url, shopId, xpaths) {
     }
   }
 
+  const parseConfig = await resolveParseConfig(shopId, xpathsOrConfig);
   const tab = await chrome.tabs.create({ url, active: false });
   try {
     await waitForTabComplete(tab.id);
@@ -195,13 +391,33 @@ async function parseViaBackgroundTab(url, shopId, xpaths) {
           finalUrl: location.href,
           h1: document.querySelector("h1")?.innerText?.slice(0, 200) || "",
           bodyLen: document.body?.innerText?.length || 0,
+          bodySample: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 220),
         }),
       });
       pageMeta = metaRes?.[0]?.result || {};
     } catch (_) {
       /* page may block script on some origins */
     }
-    const finalUrl = pageMeta.finalUrl || tabInfo.url || url;
+    let finalUrl = pageMeta.finalUrl || tabInfo.url || url;
+    if ((pageMeta.bodyLen || 0) < TAB_SPARSE_BODY_THRESHOLD) {
+      await sleep(TAB_SPARSE_BODY_RETRY_MS);
+      try {
+        const metaRes2 = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => ({
+            title: document.title || "",
+            finalUrl: location.href,
+            h1: document.querySelector("h1")?.innerText?.slice(0, 200) || "",
+            bodyLen: document.body?.innerText?.length || 0,
+            bodySample: (document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 220),
+          }),
+        });
+        pageMeta = { ...pageMeta, ...(metaRes2?.[0]?.result || {}) };
+        finalUrl = pageMeta.finalUrl || finalUrl;
+      } catch (_) {
+        /* keep first meta */
+      }
+    }
     console.log("[PriceMonitor] parse tab trace:", {
       requested_url: url,
       final_url: finalUrl,
@@ -209,7 +425,41 @@ async function parseViaBackgroundTab(url, shopId, xpaths) {
       h1: pageMeta.h1 || "",
       body_len: pageMeta.bodyLen || 0,
       shop_id: shopId,
+      parse_cfg_version: parseConfig.version || null,
     });
+    const antibotHint = `${pageMeta.title || ""} ${pageMeta.h1 || ""} ${pageMeta.bodySample || ""}`.toLowerCase();
+    const listingClosed =
+      /не\s*посмотреть|объявление закрыто|объявление снято|снят с публикации|объявление недоступ/i.test(
+        antibotHint
+      );
+    const captchaUi =
+      /captcha|smartcaptcha|antibot|я не робот|доступ ограничен|почти готово|что-то не так|access denied|challenge|cloudflare|qrator/i.test(
+        antibotHint
+      );
+    const pageEmpty = (pageMeta.bodyLen || 0) < 200;
+    if (listingClosed) {
+      // Успешный исход для репорта (не parse_error) — объявление снято
+      return {
+        price: 0,
+        in_stock: false,
+        out_of_stock: true,
+        listing_closed: true,
+        parse_status: "listing_closed",
+        ean: null,
+        title: pageMeta.h1 || pageMeta.title || null,
+        used_xpath: null,
+      };
+    }
+    if (captchaUi && (pageMeta.bodyLen || 0) < 2500) {
+      throw new Error(
+        `antibot: магазин показал защиту/капчу (title="${(pageMeta.title || "").slice(0, 80)}")`
+      );
+    }
+    if (pageEmpty) {
+      throw new Error(
+        `page_not_ready: страница ещё пустая после ожидания (bodyLen=${pageMeta.bodyLen || 0})`
+      );
+    }
     if (shopId === "ozon" && typeof PMShopUrl !== "undefined") {
       const redirectErr = PMShopUrl.ozonUrlError(finalUrl);
       if (redirectErr) {
@@ -217,12 +467,21 @@ async function parseViaBackgroundTab(url, shopId, xpaths) {
           requested_url: url,
           final_url: finalUrl,
         });
-        throw new Error(redirectErr);
+        return {
+          price: 0,
+          in_stock: false,
+          out_of_stock: true,
+          listing_closed: true,
+          parse_status: "listing_closed",
+          ean: null,
+          title: null,
+          used_xpath: null,
+        };
       }
     }
     await injectJobOverlay(tab.id, "monitor");
     await new Promise((r) => setTimeout(r, 800));
-    return await injectAndParse(tab.id, shopId, xpaths);
+    return await injectAndParse(tab.id, shopId, parseConfig);
   } finally {
     try {
       await chrome.tabs.remove(tab.id);
@@ -238,6 +497,17 @@ async function releaseTask(taskId, reason) {
     body: JSON.stringify({ task_id: taskId, reason: reason || "released" }),
   });
   return res.ok;
+}
+
+async function releaseLeftoverJobs(jobs, reason) {
+  for (const job of jobs) {
+    if (!job?.task_id) continue;
+    try {
+      await releaseTask(job.task_id, reason);
+    } catch (_) {
+      /* best-effort */
+    }
+  }
 }
 
 function shouldReportPrice(taskId, parsedPrice, lastKnownPrice) {
@@ -335,10 +605,20 @@ async function syncUserStatus() {
       can_add_tasks: status.can_add_tasks,
       can_work: status.can_work,
       can_earn: Boolean(status.can_earn),
+      can_use_widget: Boolean(status.can_use_widget),
+      can_use_referrals: Boolean(status.can_use_referrals),
+      tracker_mode: status.tracker_mode || "worker",
+      exchange_public_enabled: Boolean(status.exchange_public_enabled),
       user_tier: status.user_tier || "subscriber",
       earn_balance_cents: status.earn_balance_cents || 0,
       reputation_points: status.reputation_points || 0,
       reputation_rank: status.reputation_rank || 0,
+      tasks_frozen: Boolean(status.tasks_frozen),
+      in_grace: Boolean(status.in_grace),
+      worker_idle_minutes:
+        status.worker_idle_minutes === 0 || status.worker_idle_minutes
+          ? status.worker_idle_minutes
+          : 5,
       user_status: status,
     };
     if (status.integrity_key) {
@@ -417,7 +697,12 @@ async function registerNativeHostOnce() {
 
 async function tryNativeAutoUpdate() {
   try {
-    const resp = await chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: "update" });
+    const resp = await chrome.runtime.sendNativeMessage(NATIVE_HOST, {
+      action: "update",
+      force: true,
+      extension_id: chrome.runtime.id,
+      extension_version: PM_EXTENSION.version,
+    });
     await chrome.storage.local.set({ native_update_available: true });
     if (resp && resp.updated === true) return { ok: true, updated: true, detail: resp };
     if (
@@ -427,6 +712,9 @@ async function tryNativeAutoUpdate() {
       resp.local === resp.remote &&
       pmCompareVersions(PM_EXTENSION.version, resp.local) < 0
     ) {
+      return { ok: true, updated: true, reloaded_only: true, detail: resp };
+    }
+    if (resp && resp.local && pmCompareVersions(PM_EXTENSION.version, resp.local) < 0) {
       return { ok: true, updated: true, reloaded_only: true, detail: resp };
     }
     return { ok: true, updated: false, detail: resp };
@@ -471,6 +759,7 @@ async function pollNativeUpdateCycle({ force = false } = {}) {
       action: "poll",
       extension_version: PM_EXTENSION.version,
       extension_id: chrome.runtime.id,
+      force: Boolean(force),
     });
     await chrome.storage.local.set({ native_update_available: true });
 
@@ -498,15 +787,15 @@ async function applyNativeUpdateIfDue(latest, { force = false } = {}) {
   }
 
   await chrome.storage.local.set({ last_native_apply_at: Date.now() });
-  if (force) {
-    await notifyUpdate(`Обновляем до v${latest}… Подождите несколько секунд.`);
-  }
 
   const result = await tryNativeAutoUpdate();
   if (result.updated) {
     await finishExtensionUpdate(latest);
     return { updated: true };
   }
+
+  // Файлы уже на диске (scheduled task) — poll + reload.
+  await pollNativeUpdateCycle({ force: true });
 
   if (!result.ok) {
     console.log("[PriceMonitor] native update pending, will retry:", result.error);
@@ -515,33 +804,32 @@ async function applyNativeUpdateIfDue(latest, { force = false } = {}) {
 }
 
 async function maybeAutoInstallPendingUpdate(latest, { force = false } = {}) {
-  const { update_detected_at, native_update_available } = await chrome.storage.local.get([
-    "update_detected_at",
+  await registerNativeHostOnce();
+  const { native_update_available } = await chrome.storage.local.get([
     "native_update_available",
   ]);
 
   if (native_update_available === false && !force) {
-    await registerNativeHostOnce();
+    // Не сдаёмся навсегда: пробуем poll (мог появиться allowlist после Sync).
+    await pollNativeUpdateCycle({ force: true });
     const again = await chrome.storage.local.get(["native_update_available"]);
     if (again.native_update_available === false) {
       return { skipped: "no_native_host" };
     }
   }
 
+  const { update_detected_at } = await chrome.storage.local.get(["update_detected_at"]);
   const detectedAt = update_detected_at || Date.now();
   const elapsed = Date.now() - detectedAt;
-  if (!force && elapsed < UPDATE_AUTO_INSTALL_DELAY_MS) {
+  if (!force && UPDATE_AUTO_INSTALL_DELAY_MS > 0 && elapsed < UPDATE_AUTO_INSTALL_DELAY_MS) {
     return {
       skipped: "waiting_user",
       auto_in_ms: UPDATE_AUTO_INSTALL_DELAY_MS - elapsed,
     };
   }
 
-  if (!force) {
-    console.log("[PriceMonitor] auto-install pending update v" + latest);
-  }
-
-  return applyNativeUpdateIfDue(latest, { force });
+  console.log("[PriceMonitor] auto-install update v" + latest);
+  return applyNativeUpdateIfDue(latest, { force: true });
 }
 
 async function notifyUpdate(message) {
@@ -585,12 +873,13 @@ async function applyExtensionUpdateHint(source) {
   });
 
   if (isNew) {
-    console.log("[PriceMonitor] update available:", latest, "→ auto-install scheduled");
+    console.log("[PriceMonitor] update available:", latest, "→ auto-install now");
   }
 
   chrome.action.setBadgeText({ text: "" });
 
-  await maybeAutoInstallPendingUpdate(latest);
+  await pollNativeUpdateCycle({ force: true });
+  await maybeAutoInstallPendingUpdate(latest, { force: true });
 }
 
 async function retryPendingExtensionUpdate() {
@@ -662,7 +951,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     );
   }
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: HEARTBEAT_MINUTES });
+  chrome.alarms.create(SOLO_ALARM, { periodInMinutes: 360 });
   chrome.alarms.create(UPDATE_ALARM, { periodInMinutes: UPDATE_CHECK_MINUTES });
+  syncShopParseConfigs({ force: true });
   pollNativeUpdateCycle();
   checkExtensionUpdate(true);
   console.log("[PriceMonitor] Service worker установлен");
@@ -671,9 +962,52 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 chrome.runtime.onStartup.addListener(() => {
   pmRestoreSession();
   registerNativeHostOnce();
+  syncShopParseConfigs({ force: true });
   pollNativeUpdateCycle();
   checkExtensionUpdate(false);
 });
+
+async function fetchShopParseConfig(shopId) {
+  await syncShopParseConfigs();
+  const { shop_parse_configs } = await chrome.storage.local.get(["shop_parse_configs"]);
+  return (shop_parse_configs && shop_parse_configs[shopId]) || null;
+}
+
+async function fetchShopXpaths(shopId) {
+  const cfg = await fetchShopParseConfig(shopId);
+  return cfg?.price_xpaths || [];
+}
+
+async function runSoloChecks() {
+  const { tracker_mode } = await chrome.storage.local.get(["tracker_mode"]);
+  if (tracker_mode !== "solo") return;
+  const tasks = await SoloTasks.list();
+  for (const task of tasks) {
+    const url = task.source_url;
+    if (!url) continue;
+    try {
+      const cfg = await fetchShopParseConfig(task.shop_id);
+      const parsed = await parseViaBackgroundTab(url, task.shop_id, cfg || []);
+      const price = parsed?.price || 0;
+      if (price <= 0) continue;
+      await SoloTasks.update(task.id, { last_price: price });
+      const hit =
+        task.monitor_type === "in_stock"
+          ? parsed.in_stock
+          : task.target_price > 0 && price <= task.target_price;
+      if (hit && (await popupNotifyAllowed())) {
+        chrome.notifications.create(`solo-${task.id}-${Date.now()}`, {
+          type: "basic",
+          iconUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+          title: "Price Monitor (Соло)",
+          message: `${task.title || task.product_id}: ${price} ₽`,
+        });
+      }
+    } catch (err) {
+      console.warn("[PriceMonitor] solo check failed:", task.id, err.message);
+    }
+  }
+}
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
@@ -686,6 +1020,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
       if (can_earn) runIntegrityPing();
     });
   }
+  if (alarm.name === SOLO_ALARM) runSoloChecks();
   if (alarm.name === UPDATE_ALARM) checkExtensionUpdate();
 });
 
@@ -895,82 +1230,285 @@ async function processOneEarnJob(job) {
 }
 
 async function runEarnBatch(forceIdle) {
-  const { session_token, can_earn } = await chrome.storage.local.get([
-    "session_token",
-    "can_earn",
-  ]);
-  if (!session_token || !can_earn) {
-    return { skipped: "earn_off" };
+  if (earnBatchInFlight) {
+    console.log("[PriceMonitor] Earn уже идёт — пропуск параллельного батча");
+    return { skipped: "earn_busy" };
   }
-
-  await runIntegrityPing();
-
-  const { earn_run_mode } = await chrome.storage.local.get(["earn_run_mode"]);
-  const runMode = earn_run_mode === "always" ? "always" : "idle";
-
-  if (!forceIdle && runMode !== "always") {
-    const idle = await isUserIdle();
-    if (!idle) return { skipped: "not_idle" };
-  }
-
-  let { earn_allowed_categories } = await chrome.storage.local.get(["earn_allowed_categories"]);
-  let allowed = Array.isArray(earn_allowed_categories) ? earn_allowed_categories : [];
-  if (!allowed.length) {
-    const synced = await syncEarnCategoriesFromServer();
-    if (synced) allowed = synced;
-  }
-  if (!allowed.length) {
-    console.log("[PriceMonitor] Earn: категории не выбраны — откройте popup или сохраните на сервере");
-    return { skipped: "no_categories_selected" };
-  }
-
-  const jobRes = await apiFetch("/exchange/earn/jobs/next");
-  if (!jobRes.ok) {
-    return { error: `earn jobs ${jobRes.status}` };
-  }
-  const data = await jobRes.json();
-  await chrome.storage.local.set({
-    earn_stealth_limits: data.stealth_limits || null,
-    earn_throttle: data.throttle || null,
-  });
-  if (!data.jobs?.length) {
-    return { skipped: "no_earn_jobs", throttle: data.throttle || null, stealth_limits: data.stealth_limits || null };
-  }
-
-  console.log("[PriceMonitor] Earn пакет", data.package_id, "—", data.jobs.length, "job(s)");
-  let lastStealth = {};
-  const results = [];
-  for (const job of data.jobs) {
-    if (!allowed.includes(job.category)) {
-      console.log("[PriceMonitor] Пропуск job", job.job_id, job.category, "— не в ваших категориях");
-      results.push({
-        skipped: true,
-        job_id: job.job_id,
-        category: job.category,
-        reason: "category_not_allowed",
-      });
-      continue;
+  earnBatchInFlight = true;
+  try {
+    const { session_token, can_earn } = await chrome.storage.local.get([
+      "session_token",
+      "can_earn",
+    ]);
+    if (!session_token || !can_earn) {
+      return { skipped: "earn_off" };
     }
-    lastStealth = job.stealth || lastStealth;
-    results.push(await processOneEarnJob(job));
-    await new Promise((r) => setTimeout(r, randEarnPause(lastStealth)));
+
+    await runIntegrityPing();
+
+    const { earn_run_mode } = await chrome.storage.local.get(["earn_run_mode"]);
+    const runMode = earn_run_mode === "always" ? "always" : "idle";
+
+    if (!forceIdle && runMode !== "always") {
+      const idle = await isUserIdle();
+      if (!idle) return { skipped: "not_idle" };
+    }
+
+    let { earn_allowed_categories } = await chrome.storage.local.get(["earn_allowed_categories"]);
+    let allowed = Array.isArray(earn_allowed_categories) ? earn_allowed_categories : [];
+    if (!allowed.length) {
+      const synced = await syncEarnCategoriesFromServer();
+      if (synced) allowed = synced;
+    }
+    if (!allowed.length) {
+      console.log("[PriceMonitor] Earn: категории не выбраны — откройте popup или сохраните на сервере");
+      return { skipped: "no_categories_selected" };
+    }
+
+    const jobRes = await apiFetch("/exchange/earn/jobs/next");
+    if (!jobRes.ok) {
+      return { error: `earn jobs ${jobRes.status}` };
+    }
+    const data = await jobRes.json();
+    await chrome.storage.local.set({
+      earn_stealth_limits: data.stealth_limits || null,
+      earn_throttle: data.throttle || null,
+    });
+    if (!data.jobs?.length) {
+      return { skipped: "no_earn_jobs", throttle: data.throttle || null, stealth_limits: data.stealth_limits || null };
+    }
+
+    console.log("[PriceMonitor] Earn пакет", data.package_id, "—", data.jobs.length, "job(s)");
+    let lastStealth = {};
+    const results = [];
+    for (const job of data.jobs) {
+      if (!allowed.includes(job.category)) {
+        console.log("[PriceMonitor] Пропуск job", job.job_id, job.category, "— не в ваших категориях");
+        results.push({
+          skipped: true,
+          job_id: job.job_id,
+          category: job.category,
+          reason: "category_not_allowed",
+        });
+        continue;
+      }
+      lastStealth = job.stealth || lastStealth;
+      results.push(await processOneEarnJob(job));
+      await new Promise((r) => setTimeout(r, randEarnPause(lastStealth)));
+    }
+    return { ok: results.some((r) => r.ok), package_id: data.package_id, results };
+  } finally {
+    earnBatchInFlight = false;
   }
-  return { ok: results.some((r) => r.ok), package_id: data.package_id, results };
+}
+
+/**
+ * Live-compare: поиск → выбор карточки по скору → парсинг цены.
+ * Прямой product URL (mock / кэш) — сразу парсим + проверяем title match.
+ */
+async function parseCompareViaBackgroundTab(job, parseConfig) {
+  const sourceTitle = job.title || "";
+  const shopId = job.shop_id;
+  let url = job.url;
+  const Match = typeof PMCompareMatch !== "undefined" ? PMCompareMatch : null;
+
+  const resolvedConfig = await resolveParseConfig(shopId, parseConfig);
+  const tab = await chrome.tabs.create({ url, active: false });
+  try {
+    await waitForTabComplete(tab.id);
+    await sleep(TAB_SETTLE_AFTER_LOAD_MS);
+
+    let pickedProductId = job.product_id || "";
+    let matchMeta = { score: 0, accept: true, reason: "direct" };
+
+    const needSearch =
+      Match &&
+      (Match.isSearchUrl(url) || !Match.isProductUrl(url, shopId)) &&
+      !String(shopId || "").startsWith("mock_");
+
+    if (needSearch && sourceTitle) {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["compare_match.js"],
+      });
+      const pickRes = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (srcTitle, sid) => {
+          if (typeof PMCompareMatch === "undefined") return { best: null, count: 0 };
+          return PMCompareMatch.pickBestFromSearchDocument(srcTitle, sid);
+        },
+        args: [sourceTitle, shopId],
+      });
+      const pick = pickRes?.[0]?.result || {};
+      console.log("[PriceMonitor] compare pick:", {
+        count: pick.count,
+        best: pick.best,
+        top: (pick.top || []).slice(0, 3),
+      });
+      if (!pick.best?.href) {
+        throw new Error("compare_not_found: нет подходящей карточки в выдаче");
+      }
+      matchMeta = {
+        score: pick.best.score,
+        accept: pick.best.accept,
+        reason: pick.best.reason,
+      };
+      await chrome.tabs.update(tab.id, { url: pick.best.href });
+      await waitForTabComplete(tab.id);
+      await sleep(TAB_SETTLE_AFTER_LOAD_MS);
+      url = pick.best.href;
+      pickedProductId =
+        Match.extractProductIdFromUrl(url, shopId) || pickedProductId;
+    }
+
+    await injectJobOverlay(tab.id, "monitor");
+    await sleep(800);
+    const parsed = await injectAndParse(tab.id, shopId, resolvedConfig);
+    const tabInfo = await chrome.tabs.get(tab.id);
+    const finalUrl = tabInfo.url || url;
+    if (!pickedProductId && Match) {
+      pickedProductId = Match.extractProductIdFromUrl(finalUrl, shopId) || "";
+    }
+
+    const candTitle = parsed?.title || "";
+    if (Match && sourceTitle && candTitle && !String(shopId || "").startsWith("mock_")) {
+      matchMeta = Match.scoreCandidate(
+        sourceTitle,
+        candTitle,
+        job.ean,
+        parsed?.ean || null
+      );
+      if (!matchMeta.accept) {
+        return {
+          price: 0,
+          ean: parsed?.ean || null,
+          title: candTitle,
+          product_id: pickedProductId,
+          match: matchMeta,
+          not_found: true,
+          parse_status: "match_rejected",
+        };
+      }
+    }
+
+    return {
+      price: parsed?.price ?? 0,
+      ean: parsed?.ean || null,
+      title: candTitle || sourceTitle,
+      product_id: pickedProductId,
+      match: matchMeta,
+      not_found: false,
+      parse_status: parsed?.parse_status || "ok",
+      in_stock: parsed?.in_stock,
+      out_of_stock: parsed?.out_of_stock,
+    };
+  } finally {
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch (_) {
+      /* tab may already be closed */
+    }
+  }
 }
 
 async function processOneJob(job) {
-  const xpaths =
-    job.xpaths?.length > 0 ? job.xpaths : job.xpath ? [job.xpath] : [];
+  const isCompare = job.kind === "compare_target";
+  const parseConfig =
+    job.parse_config && typeof job.parse_config === "object"
+      ? job.parse_config
+      : job.xpaths?.length > 0
+        ? job.xpaths
+        : job.xpath
+          ? [job.xpath]
+          : [];
 
-  console.log("[PriceMonitor] Задача", job.task_id, job.url);
+  console.log(
+    "[PriceMonitor] Задача",
+    job.task_id,
+    isCompare ? "(compare_live)" : "",
+    job.url
+  );
+
+  if (!isCompare && shopSkippedThisSession(job.shop_id)) {
+    const hrs = Math.round(SESSION_SHOP_SKIP_TTL_MS / 3600000);
+    console.warn(
+      "[PriceMonitor] session_shop_skip:",
+      job.shop_id,
+      `— не открываем вкладку, release на ${hrs}ч`
+    );
+    try {
+      await releaseTask(job.task_id, "shop_session_cooldown");
+    } catch (_) {
+      /* best-effort */
+    }
+    return {
+      ok: false,
+      skipped: "shop_session_fail",
+      task_id: job.task_id,
+      shop_id: job.shop_id,
+      parse_error: `session_shop_skip: ${job.shop_id}`,
+      reported: false,
+      released: true,
+    };
+  }
 
   let parsed;
   let parseError = null;
   try {
-    parsed = await parseViaBackgroundTab(job.url, job.shop_id, xpaths);
+    if (isCompare) {
+      parsed = await parseCompareViaBackgroundTab(job, parseConfig);
+    } else {
+      parsed = await parseViaBackgroundTab(job.url, job.shop_id, parseConfig);
+    }
   } catch (parseErr) {
     console.error("[PriceMonitor] Ошибка парсинга:", parseErr.message);
     parseError = parseErr.message;
+  }
+
+  if (!isCompare) {
+    await noteShopLoadOutcome(job.shop_id, parseError);
+  }
+
+  if (isCompare) {
+    const parsedPrice = parsed?.price ?? 0;
+    const foundEan = parsed?.ean || null;
+    const Match = typeof PMCompareMatch !== "undefined" ? PMCompareMatch : null;
+    const eanPlausible = Match ? Match.isPlausibleEan(job.ean) : Boolean(job.ean);
+    const eanOk =
+      !eanPlausible ||
+      !foundEan ||
+      !Match.isPlausibleEan(foundEan) ||
+      String(foundEan) === String(job.ean);
+    const matchRejected = Boolean(parsed?.not_found) || parsed?.parse_status === "match_rejected";
+    const notFound =
+      Boolean(parseError) ||
+      matchRejected ||
+      parsedPrice <= 0 ||
+      !eanOk;
+    const reportRes = await apiFetch("/tasks/report", {
+      method: "POST",
+      body: JSON.stringify({
+        task_id: job.task_id,
+        parsed_price: notFound ? 0 : parsedPrice,
+        ean: eanPlausible ? job.ean : foundEan || undefined,
+        title: parsed?.title || job.title || undefined,
+        product_id: parsed?.product_id || job.product_id || undefined,
+        kind: "compare_target",
+        session_id: job.session_id || undefined,
+        not_found: notFound,
+        parse_error: parseError || (matchRejected ? "match_rejected" : undefined),
+      }),
+    });
+    return {
+      ok: reportRes.ok && !notFound,
+      task_id: job.task_id,
+      kind: "compare_target",
+      parsed_price: notFound ? 0 : parsedPrice,
+      ean: foundEan,
+      match: parsed?.match,
+      reported: reportRes.ok,
+      not_found: notFound,
+    };
   }
 
   if (parseError) {
@@ -991,23 +1529,7 @@ async function processOneJob(job) {
   }
 
   const parsedPrice = parsed.price ?? 0;
-
-  if (parsedPrice <= 0 && !parsed.in_stock && parsed.in_stock !== false) {
-    // out_of_stock=false with price 0 — всё равно отчитываемся
-  }
-
-  if (!shouldReportPrice(job.task_id, parsedPrice, job.last_price)) {
-    console.log(
-      "[PriceMonitor] Цена нестабильна, пропуск report:",
-      parsedPrice,
-      "last:",
-      job.last_price
-    );
-    await releaseTask(job.task_id, "unstable_price");
-    return { skipped: "unstable_price", task_id: job.task_id, price: parsedPrice };
-  }
-
-  getPriceStabilizer(job.task_id).reset();
+  const parseStatus = parsed.parse_status || (parsed.listing_closed ? "listing_closed" : "ok");
 
   const reportRes = await apiFetch("/tasks/report", {
     method: "POST",
@@ -1017,6 +1539,7 @@ async function processOneJob(job) {
       ean: parsed.ean || undefined,
       title: parsed.title || undefined,
       in_stock: parsed.in_stock,
+      parse_status: parseStatus,
     }),
   });
 
@@ -1040,81 +1563,169 @@ async function processOneJob(job) {
 }
 
 async function runHeartbeat(forceIdle) {
-  const { session_token, is_worker_mode } = await chrome.storage.local.get([
-    "session_token",
-    "is_worker_mode",
-  ]);
-
-  if (!session_token) {
-    console.log("[PriceMonitor] Нет сессии — пропуск heartbeat");
-    return { skipped: "no_session" };
+  if (heartbeatInFlight) {
+    console.log("[PriceMonitor] Heartbeat уже идёт — пропуск параллельного drain");
+    return { skipped: "heartbeat_busy" };
   }
-
-  await syncUserStatus();
-  const stored = await chrome.storage.local.get(["is_worker_mode"]);
-  if (!stored.is_worker_mode) {
-    console.log("[PriceMonitor] Режим воркера выключен — пропуск");
-    return { skipped: "worker_off" };
-  }
-
+  heartbeatInFlight = true;
   try {
-    await apiFetch("/user/worker_ping", { method: "POST" });
-  } catch (e) {
-    console.warn("[PriceMonitor] worker_ping:", e);
-  }
+    const { session_token, is_worker_mode } = await chrome.storage.local.get([
+      "session_token",
+      "is_worker_mode",
+    ]);
 
-  if (!forceIdle) {
-    const idle = await isUserIdle();
-    if (!idle) {
-      console.log("[PriceMonitor] Пользователь активен — ждём idle");
-      return { skipped: "not_idle" };
-    }
-  }
-
-  try {
-    const jobRes = await apiFetch("/tasks/get_job");
-    if (!jobRes.ok) {
-      console.warn("[PriceMonitor] get_job ошибка:", jobRes.status);
-      return { error: `get_job ${jobRes.status}` };
+    if (!session_token) {
+      console.log("[PriceMonitor] Нет сессии — пропуск heartbeat");
+      return { skipped: "no_session" };
     }
 
-    const job = await jobRes.json();
-    const jobs =
-      job.jobs?.length > 0
-        ? job.jobs
-        : job.task_id && job.url
-          ? [job]
-          : [];
-
-    if (!jobs.length) {
-      console.log("[PriceMonitor] Нет задач в очереди");
-      return { skipped: "no_jobs" };
+    await syncUserStatus();
+    await syncShopParseConfigs();
+    const stored = await chrome.storage.local.get(["is_worker_mode"]);
+    if (!stored.is_worker_mode) {
+      console.log("[PriceMonitor] Режим воркера выключен — пропуск");
+      return { skipped: "worker_off" };
     }
 
-    console.log(
-      "[PriceMonitor] Пакет",
-      job.package_id || "legacy",
-      "—",
-      jobs.length,
-      "товар(ов)"
-    );
-
-    const results = [];
-    for (const item of jobs) {
-      results.push(await processOneJob(item));
+    try {
+      await apiFetch("/user/worker_ping", { method: "POST" });
+    } catch (e) {
+      console.warn("[PriceMonitor] worker_ping:", e);
     }
 
-    const last = results[results.length - 1];
-    return {
-      ok: results.some((r) => r.ok),
-      package_id: job.package_id,
-      processed: results.length,
-      results,
-      ...last,
-    };
-  } catch (err) {
-    console.error("[PriceMonitor] Heartbeat failed:", err);
-    return { error: err.message };
+    if (!forceIdle) {
+      const idle = await isUserIdle();
+      if (!idle) {
+        console.log("[PriceMonitor] Пользователь активен — ждём idle");
+        return { skipped: "not_idle" };
+      }
+    }
+
+    try {
+      const allResults = [];
+      let packages = 0;
+      let processed = 0;
+      await loadShopFailState();
+
+      while (processed < WORKER_SESSION_MAX_JOBS) {
+        if (!forceIdle) {
+          const stillIdle = await isUserIdle();
+          if (!stillIdle) {
+            console.log("[PriceMonitor] Пользователь вернулся — стоп сессии");
+            break;
+          }
+        }
+
+        const jobRes = await apiFetch("/tasks/get_job");
+        if (!jobRes.ok) {
+          console.warn("[PriceMonitor] get_job ошибка:", jobRes.status);
+          return { error: `get_job ${jobRes.status}`, processed, packages, results: allResults };
+        }
+
+        const job = await jobRes.json();
+        const jobs =
+          job.jobs?.length > 0
+            ? job.jobs
+            : job.task_id && job.url
+              ? [job]
+              : [];
+
+        if (!jobs.length) {
+          if (packages === 0) {
+            console.log("[PriceMonitor] Нет задач в очереди");
+            return { skipped: "no_jobs" };
+          }
+          console.log("[PriceMonitor] Очередь пуста — сессия завершена");
+          break;
+        }
+
+        packages += 1;
+        console.log(
+          "[PriceMonitor] Пакет",
+          job.package_id || "legacy",
+          "—",
+          jobs.length,
+          "товар(ов); сессия",
+          processed,
+          "/",
+          WORKER_SESSION_MAX_JOBS
+        );
+
+        const packageResults = [];
+        for (let i = 0; i < jobs.length; i++) {
+          const item = jobs[i];
+          if (processed >= WORKER_SESSION_MAX_JOBS) {
+            await releaseLeftoverJobs(jobs.slice(i), "session_limit");
+            break;
+          }
+          if (!forceIdle) {
+            const stillIdle = await isUserIdle();
+            if (!stillIdle) {
+              await releaseLeftoverJobs(jobs.slice(i), "worker_interrupted");
+              break;
+            }
+          }
+          // Магазин на паузе — отпустить весь хвост этого шопа без вкладок.
+          if (item.kind !== "compare_target" && shopSkippedThisSession(item.shop_id)) {
+            const batch = [];
+            let j = i;
+            while (j < jobs.length && jobs[j].shop_id === item.shop_id) {
+              batch.push(jobs[j]);
+              j += 1;
+            }
+            await releaseLeftoverJobs(batch, "shop_session_cooldown");
+            for (const sj of batch) {
+              const r = {
+                ok: false,
+                skipped: "shop_session_fail",
+                task_id: sj.task_id,
+                shop_id: sj.shop_id,
+                released: true,
+              };
+              packageResults.push(r);
+              allResults.push(r);
+              processed += 1;
+            }
+            i = j - 1;
+            continue;
+          }
+          const one = await processOneJob(item);
+          packageResults.push(one);
+          allResults.push(one);
+          processed += 1;
+          const pause =
+            WORKER_JOB_PAUSE_MIN_MS +
+            Math.floor(
+              Math.random() * (WORKER_JOB_PAUSE_MAX_MS - WORKER_JOB_PAUSE_MIN_MS + 1)
+            );
+          await sleep(pause);
+        }
+
+        const onlySkips =
+          packageResults.length > 0 &&
+          packageResults.every((r) => r?.skipped === "shop_session_fail");
+        if (onlySkips) {
+          console.log(
+            "[PriceMonitor] Пакет только из магазинов на паузе — стоп drain"
+          );
+          break;
+        }
+      }
+
+      const last = allResults[allResults.length - 1] || {};
+      return {
+        ok: allResults.some((r) => r.ok),
+        packages,
+        processed: allResults.length,
+        results: allResults,
+        ...last,
+      };
+    } catch (err) {
+      console.error("[PriceMonitor] Heartbeat failed:", err);
+      return { error: err.message };
+    }
+  } finally {
+    heartbeatInFlight = false;
   }
 }
 
@@ -1165,14 +1776,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       try {
         const url = await pmApiUrl("/compare/lookup");
-        const res = await fetch(url, {
+        const res = await authFetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(message.payload),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          sendResponse({ error: err.detail || `HTTP ${res.status}` });
+          sendResponse({ error: err.detail?.message || err.detail || `HTTP ${res.status}` });
           return;
         }
         sendResponse(await res.json());
@@ -1180,6 +1790,93 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ error: err.message });
       }
     })();
+    return true;
+  }
+
+  if (message.type === "COMPARE_LIVE") {
+    (async () => {
+      try {
+        const url = await pmApiUrl("/compare/live");
+        const res = await authFetch(url, {
+          method: "POST",
+          body: JSON.stringify(message.payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          sendResponse({ error: err.detail?.message || err.detail || `HTTP ${res.status}` });
+          return;
+        }
+        sendResponse(await res.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "COMPARE_SESSION_POLL") {
+    (async () => {
+      try {
+        const sid = message.session_id || message.payload?.session_id;
+        const url = await pmApiUrl(`/compare/sessions/${sid}`);
+        const res = await authFetch(url);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          sendResponse({ error: err.detail?.message || err.detail || `HTTP ${res.status}` });
+          return;
+        }
+        sendResponse(await res.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "ROUTE_COMPARE_LOOKUP") {
+    (async () => {
+      try {
+        const url = await pmApiUrl("/compare/route-lookup");
+        const res = await authFetch(url, {
+          method: "POST",
+          body: JSON.stringify(message.payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          sendResponse({ error: err.detail?.message || err.detail || `HTTP ${res.status}` });
+          return;
+        }
+        sendResponse(await res.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "REFERRAL_URL") {
+    (async () => {
+      try {
+        const q = new URLSearchParams({
+          shop_id: message.shop_id,
+          product_id: message.product_id || "/",
+        });
+        const url = await pmApiUrl(`/meta/referral-url?${q}`);
+        const res = await authFetch(url);
+        if (!res.ok) {
+          sendResponse({ error: `HTTP ${res.status}` });
+          return;
+        }
+        sendResponse(await res.json());
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "SOLO_SCHEDULE_CHECK") {
+    runSoloChecks().then(() => sendResponse({ ok: true }));
     return true;
   }
 
@@ -1250,6 +1947,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const result = await applyNativeUpdateIfDue(latest, { force: true });
       sendResponse({ ok: true, ...result });
     })();
+    return true;
+  }
+
+  if (message.type === "OPEN_AUTO_UPDATE_SETUP") {
+    chrome.tabs.create({ url: AUTO_UPDATE_SETUP_URL, active: true }).then(() => sendResponse({ ok: true }));
     return true;
   }
 });

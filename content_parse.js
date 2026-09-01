@@ -1,13 +1,13 @@
 const parsePrice = PMUtils.parsePrice;
 
 function scanJsonForEAN(obj, depth) {
-  if (depth > 6 || obj == null) return null;
+  if (depth > 8 || obj == null) return null;
   if (typeof obj === "string") {
     const m = obj.match(/^\d{8,14}$/);
     return m ? m[0] : null;
   }
   if (typeof obj !== "object") return null;
-  for (const k of ["barcode", "ean", "gtin", "gtin13"]) {
+  for (const k of ["barcode", "ean", "gtin", "gtin13", "gtin12", "gtin8", "штрихкод", "sku"]) {
     if (obj[k] != null) {
       const v = String(obj[k]).replace(/\D/g, "");
       if (v.length >= 8 && v.length <= 14) return v;
@@ -20,7 +20,25 @@ function scanJsonForEAN(obj, depth) {
   return null;
 }
 
+function extractEANFromDOM() {
+  const labels = /^(штрих\s*код|штрихкод|ean|barcode|upc|gtin)$/i;
+  for (const el of document.querySelectorAll("dt, span, div, td, th, button, li")) {
+    const label = el.textContent?.trim();
+    if (!label || label.length > 30 || !labels.test(label)) continue;
+    const sibling =
+      el.nextElementSibling ||
+      el.parentElement?.querySelector("dd, span + span, div + div");
+    const val = sibling?.textContent?.trim() || "";
+    const m = val.match(/\b(\d{8,14})\b/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 function extractEAN() {
+  if (typeof PMUtils !== "undefined" && PMUtils.extractEanFromDocument) {
+    return PMUtils.extractEanFromDocument(document);
+  }
   if (window.__NUXT__?.data) {
     const ean = scanJsonForEAN(window.__NUXT__.data, 0);
     if (ean) return ean;
@@ -30,14 +48,25 @@ function extractEAN() {
       const data = JSON.parse(script.textContent);
       const items = Array.isArray(data) ? data : [data];
       for (const item of items) {
-        const gtin = item.gtin13 || item.gtin12 || item.gtin;
-        if (gtin) return String(gtin).replace(/\D/g, "");
+        const gtin = item.gtin13 || item.gtin12 || item.gtin || item.isbn;
+        const d = String(gtin || "").replace(/\D/g, "");
+        if (d.length >= 8 && d.length <= 14) return d;
       }
     } catch (_) {
       /* ignore */
     }
   }
-  return null;
+  return (
+    extractEANFromDOM() ||
+    (() => {
+      const m = (document.body?.innerText || "").match(
+        /(?:штрих[-\s]?код|isbn|ean|barcode)\s*[:\n]\s*([\dXx\-\s]{8,20})/i
+      );
+      if (!m) return null;
+      const d = m[1].replace(/\D/g, "");
+      return d.length >= 8 && d.length <= 14 ? d : null;
+    })()
+  );
 }
 
 function extractTitle() {

@@ -227,6 +227,30 @@
     .earn-check-row input { width: auto; margin: 0; }
     .earn-admin-hint { font-size: 11px; color: #92400e; margin-top: 6px; }
 
+    #onboarding-overlay {
+      position: fixed; inset: 0; z-index: 100; background: #f8f9fa;
+      padding: 16px; overflow-y: auto;
+    }
+    #onboarding-overlay.hidden { display: none; }
+    .onb-step { display: none; }
+    .onb-step.active { display: block; }
+    .onb-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; color: #1d4ed8; }
+    .onb-desc { font-size: 13px; color: #4b5563; margin-bottom: 14px; line-height: 1.45; }
+    .mode-card {
+      border: 2px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 10px;
+      cursor: pointer; background: #fff;
+    }
+    .mode-card:hover { border-color: #2563eb; }
+    .mode-card h3 { font-size: 15px; margin-bottom: 4px; }
+    .mode-card p { font-size: 12px; color: #6b7280; margin: 0; }
+    #solo-pressure {
+      background: #fff7ed; border: 1px solid #fdba74; border-radius: 8px;
+      padding: 10px; margin-bottom: 12px; font-size: 12px; color: #9a3412;
+    }
+    #solo-pressure.hidden { display: none; }
+    #referral-section.hidden { display: none; }
+    #mode-section.hidden { display: none; }
+
   </style>
 
 </head>
@@ -238,6 +262,50 @@
     <h1>Price Monitor <span id="ext-version" style="font-size:11px;color:#6b7280;font-weight:400"></span></h1>
 
     <div id="update-banner" class="update-banner hidden"></div>
+
+    <div id="onboarding-overlay" class="hidden">
+      <div id="onb-step-1" class="onb-step active">
+        <div class="onb-title">Как начать</div>
+        <p class="onb-desc">
+          Можно сразу следить за ценами на этом ПК (без Telegram) или связать бота —
+          тогда будут облако, сравнение цен и уведомления в Telegram.
+        </p>
+        <button id="onb-solo-local-btn" class="btn-primary" type="button" style="margin-bottom:12px">Продолжить на этом ПК</button>
+        <p class="onb-desc" style="margin-top:8px">Или свяжите Telegram — код из бота:</p>
+        <label for="onb-connect-code">Код связки</label>
+        <input id="onb-connect-code" type="text" inputmode="numeric" maxlength="4" placeholder="1234" style="width:100%;margin-bottom:10px;padding:8px;border-radius:6px;border:1px solid #d1d5db">
+        <button id="onb-connect-btn" class="btn-secondary" type="button">Подключить Telegram</button>
+        <div id="onb-auth-status" class="status hidden"></div>
+      </div>
+      <div id="onb-step-2" class="onb-step">
+        <div class="onb-title">Канал (для халявы-бота)</div>
+        <p class="onb-desc">Подписка на канал нужна только для рассылки акций в боте. Трекер цен работает и без неё — можно пропустить.</p>
+        <a id="onb-channel-link" href="https://t.me/TheCurlyNews" target="_blank" rel="noopener" class="btn-secondary" style="display:block;text-align:center;margin-bottom:10px">Открыть канал</a>
+        <label class="earn-check-row"><input id="onb-channel-ok" type="checkbox"> Я подписался (необязательно)</label>
+        <button id="onb-step2-next" class="btn-primary" type="button" style="margin-top:12px">Далее</button>
+        <button id="onb-step2-skip" class="btn-secondary" type="button" style="margin-top:8px">Пропустить</button>
+      </div>
+      <div id="onb-step-3" class="onb-step">
+        <div class="onb-title">Как устроено — коротко</div>
+        <p class="onb-desc">
+          Автообновление расширения настроено: новые версии подтягиваются сами с
+          <strong>halyavka.online</strong> (исходники открыты, MIT).
+        </p>
+        <ul class="transparency-list" style="margin-bottom:12px">
+          <li><strong>Сейчас</strong> — можно добавлять товары и следить за ценой. С Telegram: ~30 дней полного облака (триал).</li>
+          <li><strong>Воркер</strong> — бесплатно: ПК в простое помогает сети читать цены с белого списка. Включается в блоке «Режим».</li>
+          <li><strong>Premium</strong> — не продаётся; выдаётся за достижения (рефералы, топ, донат и т.п.).</li>
+          <li>Ничего не навязываем при старте: режим можно сменить в любой момент.</li>
+        </ul>
+        <p class="onb-desc">Код и белый список магазинов — на GitHub и в разделе «Что делает расширение».</p>
+        <button id="onb-done-btn" class="btn-primary" type="button" style="margin-top:8px">Понятно, начать</button>
+      </div>
+    </div>
+
+    <div id="solo-pressure" class="hidden">
+      Сейчас задачи хранятся <strong>только на этом ПК</strong>. Чтобы синхронизация и уведомления в Telegram —
+      свяжите аккаунт и включите Воркер в блоке «Режим» ниже.
+    </div>
 
     <div id="transparency-section" class="section">
       <div class="paywall-title">Что делает расширение</div>
@@ -271,8 +339,10 @@
       </p>
       <label for="earn-display-name" class="paywall-desc" style="display:block;margin-bottom:4px"><strong>Имя в рейтинге</strong> (видно заказчикам)</label>
       <input id="earn-display-name" type="text" maxlength="32" placeholder="например, Алекс" style="width:100%;margin-bottom:10px;padding:6px 8px;border-radius:6px;border:1px solid #d1d5db;box-sizing:border-box">
-      <div id="earn-consent-hint" class="paywall-desc hidden" style="color:#92400e;margin-bottom:8px">
-        Нажмите «Сохранить» — условия биржи будут приняты автоматически.
+      <div id="earn-consent-hint" class="paywall-desc" style="color:#92400e;margin-bottom:8px">
+        <strong>Риск выше, чем у мониторинга.</strong>
+        После «Сохранить» скрипт по заданию сервера может <em>кликать и печатать</em> на выбранных сайтах
+        (не только читать цену). Включайте только осознанно. Мониторинг цен этого не делает.
       </div>
       <div id="earn-admin-hint" class="earn-admin-hint hidden"></div>
       <p class="paywall-desc" style="margin-bottom:6px"><strong>Когда брать задачи</strong></p>
@@ -319,10 +389,11 @@
     </details>
 
     <details id="adventurer-teaser" class="section hidden">
-      <summary class="paywall-title" style="cursor:pointer;list-style:revert;margin-left:4px">Заработок на бирже (необязательно)</summary>
+      <summary class="paywall-title" style="cursor:pointer;list-style:revert;margin-left:4px">Заработок на бирже (отдельно, по желанию)</summary>
       <p class="paywall-desc" style="margin-top:10px">
-        Отдельный режим <strong>авантюрист</strong> — платные задачи с ваших аккаунтов (лайки, отзывы и т.д.).
-        Для мониторинга <em>своих</em> покупок не нужен: достаточно триала, подписки или воркера.
+        <strong>Авантюрист</strong> — платные задачи с ваших аккаунтов (лайки, отзывы и т.д.).
+        Это <em>не включено по умолчанию</em>: нужны согласие и понимание рисков (блокировки аккаунтов).
+        Для мониторинга <em>своих</em> покупок достаточно триала или режима воркера — биржа не обязательна.
       </p>
       <a id="adventurer-teaser-link" href="https://halyavka.online/earn/?from=extension" target="_blank" rel="noopener"
          class="btn-secondary" style="display:inline-block;margin-top:8px;text-align:center;text-decoration:none;padding:8px 12px">
@@ -357,6 +428,12 @@
     <div id="account-section" class="section hidden">
 
       <div id="account-status" class="status info"></div>
+      <button id="revoke-session-btn" type="button" class="btn-secondary" style="margin-top:8px;width:100%">
+        Отвязать этот ПК
+      </button>
+      <p class="paywall-desc" style="margin-top:6px;font-size:0.8rem;color:#6b7280">
+        Сбросит токен на этом устройстве. Новый код — в Telegram-боте.
+      </p>
 
       <div id="reputation-box" class="product-info hidden" style="margin-top:10px">
         <strong>⭐ Рейтинг:</strong> <span id="reputation-points">0</span> баллов
@@ -365,21 +442,37 @@
         <a id="leaderboard-link" href="https://halyavka.online/leaderboard/" target="_blank" rel="noopener" style="font-size:0.85rem">Таблица лидеров →</a>
       </div>
 
+      <div id="referral-section" class="product-info hidden" style="margin-top:10px">
+        <strong>👥 Приведи друга</strong>
+        <p id="referral-link-line" class="muted" style="font-size:0.82rem;word-break:break-all;margin:6px 0"></p>
+        <button id="referral-copy-btn" type="button" class="btn-secondary" style="font-size:12px;padding:6px 10px">Копировать ссылку</button>
+        <p id="referral-stats" class="muted" style="font-size:0.8rem;margin-top:6px"></p>
+      </div>
+
+      <div id="mode-section" class="hidden" style="margin-top:10px">
+        <div class="paywall-desc" style="margin-bottom:6px">
+          <strong>Режим:</strong> <span id="tracker-mode-label">—</span>
+          <span class="muted" style="display:block;margin-top:4px;font-size:11px">Можно сменить в любой момент — ничего не «запираем» при старте.</span>
+        </div>
+        <button id="mode-solo-btn" type="button" class="btn-secondary" style="font-size:11px;margin:2px">Соло</button>
+        <button id="mode-worker-btn" type="button" class="btn-primary" style="font-size:11px;margin:2px">Воркер</button>
+      </div>
+
     </div>
 
 
 
     <div id="paywall-section" class="section hidden">
 
-      <div class="paywall-title">Триал закончился</div>
+      <div class="paywall-title" id="paywall-title">Облачный доступ приостановлен</div>
 
-      <div class="paywall-desc">
-
-        Выберите способ продолжить мониторинг цен:
-
+      <div class="paywall-desc" id="paywall-desc">
+        Задачи сохранены, но не мониторятся. Сравнение цен недоступно.
+        Включите Воркер бесплатно — всё продолжится как было.
+        Premium не продаётся; выдаётся за достижения внутри системы.
       </div>
 
-      <button id="premium-btn" class="btn-primary">100 ₽/мес — без нагрузки на ПК</button>
+      <button id="premium-btn" class="btn-primary hidden" type="button" aria-hidden="true">Premium</button>
 
       <div class="toggle-row">
 
@@ -389,7 +482,7 @@
 
       </div>
 
-      <div class="paywall-desc">Воркер парсит задачи в фоне, когда вы away (&gt;5 мин)</div>
+      <div class="paywall-desc">Воркер помогает сети; ваши товары снова мониторятся.</div>
 
       <div id="paywall-status" class="status hidden"></div>
 
@@ -407,9 +500,23 @@
 
       </div>
 
-      <div class="status info">P2P-парсинг только когда вы away (&gt;5 мин)</div>
+      <p class="paywall-desc" style="margin:8px 0 4px"><strong>Когда работать</strong></p>
+      <div class="earn-check-row"><label><input type="radio" name="worker-idle" value="0"> Всегда (пока Chrome открыт)</label></div>
+      <div class="earn-check-row"><label><input type="radio" name="worker-idle" value="5" checked> Idle 5 мин</label></div>
+      <div class="earn-check-row"><label><input type="radio" name="worker-idle" value="15"> Idle 15 мин</label></div>
+      <div class="earn-check-row"><label><input type="radio" name="worker-idle" value="30"> Idle 30 мин</label></div>
+
+      <div class="status info" id="worker-idle-hint" style="margin-top:8px">P2P только в выбранном режиме простоя</div>
       <button type="button" id="worker-queue-btn" class="btn-secondary" style="margin-top:8px">Что мониторит сеть →</button>
 
+    </div>
+
+    <div id="notify-prefs-section" class="section">
+      <div class="toggle-row">
+        <label for="popup-notify-toggle">Popup-уведомления в Chrome</label>
+        <input id="popup-notify-toggle" type="checkbox" checked>
+      </div>
+      <p class="paywall-desc">Локальные алерты о скидке. Telegram при облачном доступе приходит отдельно.</p>
     </div>
 
 
@@ -417,7 +524,7 @@
     <div id="monitor-section" class="section hidden">
 
       <div class="status info" style="margin-bottom:10px;font-size:0.82rem;line-height:1.4">
-        Только <a href="transparency.html" target="_blank">12 магазинов whitelist</a>.
+        Только <a href="transparency.html" target="_blank">13 магазинов whitelist</a>.
         Другие ссылки сервер не примет. Воркер открывает те же URL — см.
         <a id="whitelist-link-popup" href="#" target="_blank" rel="noopener">GitHub</a>.
       </div>
@@ -472,6 +579,7 @@
   <script src="api_config.js"></script>
   <script src="earn_prefs.js"></script>
   <script src="session_store.js"></script>
+  <script src="solo_tasks.js"></script>
   <script src="popup.js"></script>
 
 </body>
